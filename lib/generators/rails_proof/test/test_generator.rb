@@ -1,5 +1,8 @@
 require "pathname"
 require "rails_proof/model_inspector"
+require "rails_proof/model_test_plan"
+require "rails_proof/test_inspector"
+require "rails_proof/test_coverage_plan"
 
 module RailsProof
   class TestGenerator < Rails::Generators::Base
@@ -23,7 +26,7 @@ module RailsProof
       say "Model class: #{model_class_name}"
       say "Test file: #{test_file_path}"
       say "Test status: #{test_file_status}"
-      say "Test cases: #{test_case_count}" if absolute_test_file_path.file?
+      say "Test cases: #{test_inspector.count}" if absolute_test_file_path.file?
 
       report_source_analysis
       report_runtime_analysis
@@ -77,17 +80,20 @@ module RailsProof
       absolute_test_file_path.file? ? "exists" : "missing"
     end
 
-    def test_case_count
-      test_source.scan(/^\s*test\s+["'][^"']+["']\s+do\b/).count +
-        test_source.scan(/^\s*def\s+test_\w+/).count
-    end
-
     def model_source
       @model_source ||= absolute_model_path.read
     end
 
     def test_source
-      @test_source ||= absolute_test_file_path.read
+      @test_source ||= if absolute_test_file_path.file?
+        absolute_test_file_path.read
+      else
+        ""
+      end
+    end
+
+    def test_inspector
+      @test_inspector ||= RailsProof::TestInspector.new(test_source)
     end
 
     def association_declarations
@@ -127,6 +133,7 @@ module RailsProof
       end
 
       inspector = RailsProof::ModelInspector.new(model_class)
+      plan = RailsProof::ModelTestPlan.new(inspector)
 
       say "Runtime inspection: available"
       say "Table: #{inspector.table_name}"
@@ -134,6 +141,8 @@ module RailsProof
       report_runtime_columns(inspector)
       report_runtime_associations(inspector)
       report_runtime_validators(inspector)
+      report_test_plan(plan)
+      report_coverage(plan)
     end
 
     def report_runtime_columns(inspector)
@@ -172,6 +181,25 @@ module RailsProof
           "  #{validator[:class_name]} " \
           "attributes=#{validator[:attributes].inspect}"
         )
+      end
+    end
+
+    def report_test_plan(plan)
+      say "Suggested tests: #{plan.count}"
+      plan.concerns.each do |concern|
+        say "  #{concern[:description]}"
+      end
+    end
+
+    def report_coverage(plan)
+      coverage = RailsProof::TestCoveragePlan.new(plan, test_inspector)
+
+      say "Coverage:"
+      say "  Covered: #{coverage.covered_count}"
+      say "  Missing: #{coverage.missing_count}"
+
+      coverage.missing_concerns.each do |concern|
+        say "    #{concern[:description]}"
       end
     end
   end

@@ -29,7 +29,7 @@ class RailsProof::TestGeneratorTest < Rails::Generators::TestCase
     assert_includes output, "Test cases: 0"
   end
 
-  test "counts Rails-style test cases" do
+  test "counts both Minitest declaration styles" do
     create_user_test_with_test_cases
 
     output = run_generator ["app/models/user.rb"]
@@ -64,6 +64,60 @@ class RailsProof::TestGeneratorTest < Rails::Generators::TestCase
     assert_includes output, "Runtime validators: 2"
     assert_includes output, "attributes=[:title]"
     assert_includes output, "attributes=[:user]"
+  end
+
+  test "reports the suggested model tests" do
+    create_post_model
+
+    output = run_generator ["app/models/post.rb"]
+
+    assert_includes output, "Suggested tests: 2"
+    assert_includes output, "belongs_to :user"
+    assert_includes output, "validates presence of title"
+  end
+
+  test "does not duplicate the implicit belongs_to presence validation" do
+    create_post_model
+
+    output = run_generator ["app/models/post.rb"]
+
+    refute_includes output, "validates presence of user"
+  end
+
+  test "reports all suggested tests missing when the test is empty" do
+    create_post_model
+    create_empty_post_test
+
+    output = run_generator ["app/models/post.rb"]
+
+    assert_includes output, "Coverage:"
+    assert_includes output, "Covered: 0"
+    assert_includes output, "Missing: 2"
+    assert_includes output, "belongs_to :user"
+    assert_includes output, "validates presence of title"
+  end
+
+  test "reports suggested tests as covered when matching tests exist" do
+    create_post_model
+    create_covered_post_test
+
+    output = run_generator ["app/models/post.rb"]
+
+    assert_includes output, "Test cases: 2"
+    assert_includes output, "Coverage:"
+    assert_includes output, "Covered: 2"
+    assert_includes output, "Missing: 0"
+  end
+
+  test "reports partial test coverage" do
+    create_post_model
+    create_partially_covered_post_test
+
+    output = run_generator ["app/models/post.rb"]
+
+    assert_includes output, "Covered: 1"
+    assert_includes output, "Missing: 1"
+    assert_includes output, "validates presence of title"
   end
 
   test "does not create the model test yet" do
@@ -130,6 +184,58 @@ class RailsProof::TestGeneratorTest < Rails::Generators::TestCase
 
           def test_email_can_be_assigned
             assert_equal "john@example.com", User.new(email: "john@example.com").email
+          end
+        end
+      RUBY
+    )
+  end
+
+  def create_empty_post_test
+    mkdir_p File.join(destination_root, "test/models")
+
+    File.write(
+      File.join(destination_root, "test/models/post_test.rb"),
+      <<~RUBY
+        require "test_helper"
+
+        class PostTest < ActiveSupport::TestCase
+        end
+      RUBY
+    )
+  end
+
+  def create_covered_post_test
+    mkdir_p File.join(destination_root, "test/models")
+
+    File.write(
+      File.join(destination_root, "test/models/post_test.rb"),
+      <<~RUBY
+        require "test_helper"
+
+        class PostTest < ActiveSupport::TestCase
+          test "belongs to user" do
+            assert true
+          end
+
+          test "title is required" do
+            assert true
+          end
+        end
+      RUBY
+    )
+  end
+
+  def create_partially_covered_post_test
+    mkdir_p File.join(destination_root, "test/models")
+
+    File.write(
+      File.join(destination_root, "test/models/post_test.rb"),
+      <<~RUBY
+        require "test_helper"
+
+        class PostTest < ActiveSupport::TestCase
+          test "belongs to user" do
+            assert true
           end
         end
       RUBY
