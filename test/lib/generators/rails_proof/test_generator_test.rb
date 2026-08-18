@@ -16,8 +16,8 @@ class RailsProof::TestGeneratorTest < Rails::Generators::TestCase
     assert_includes output, "Test file: test/models/user_test.rb"
     assert_includes output, "Test status: missing"
     refute_includes output, "Test cases:"
-    assert_includes output, "Associations: 0"
-    assert_includes output, "Validations: 0"
+    assert_includes output, "Source associations: 0"
+    assert_includes output, "Source validations: 0"
   end
 
   test "reports an existing empty model test" do
@@ -38,16 +38,32 @@ class RailsProof::TestGeneratorTest < Rails::Generators::TestCase
     assert_includes output, "Test cases: 2"
   end
 
-  test "reports model associations and validations" do
+  test "reports source associations and validations" do
     create_post_model
 
     output = run_generator ["app/models/post.rb"]
 
     assert_includes output, "Model class: Post"
-    assert_includes output, "Associations: 1"
+    assert_includes output, "Source associations: 1"
     assert_includes output, "belongs_to :user"
-    assert_includes output, "Validations: 1"
+    assert_includes output, "Source validations: 1"
     assert_includes output, "validates :title, presence: true"
+  end
+
+  test "reports runtime model information" do
+    create_post_model
+
+    output = run_generator ["app/models/post.rb"]
+
+    assert_includes output, "Runtime inspection: available"
+    assert_includes output, "Table: posts"
+    assert_includes output, "title string null=true"
+    assert_includes output, "user_id integer null=false"
+    assert_includes output, "Runtime associations: 1"
+    assert_includes output, "belongs_to :user class=User foreign_key=user_id"
+    assert_includes output, "Runtime validators: 2"
+    assert_includes output, "attributes=[:title]"
+    assert_includes output, "attributes=[:user]"
   end
 
   test "does not create the model test yet" do

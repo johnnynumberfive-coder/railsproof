@@ -1,4 +1,5 @@
 require "pathname"
+require "rails_proof/model_inspector"
 
 module RailsProof
   class TestGenerator < Rails::Generators::Base
@@ -24,15 +25,8 @@ module RailsProof
       say "Test status: #{test_file_status}"
       say "Test cases: #{test_case_count}" if absolute_test_file_path.file?
 
-      say "Associations: #{association_declarations.count}"
-      association_declarations.each do |declaration|
-        say "  #{declaration}"
-      end
-
-      say "Validations: #{validation_declarations.count}"
-      validation_declarations.each do |declaration|
-        say "  #{declaration}"
-      end
+      report_source_analysis
+      report_runtime_analysis
     end
 
     private
@@ -65,6 +59,10 @@ module RailsProof
 
     def model_class_name
       model_name.camelize
+    end
+
+    def model_class
+      @model_class ||= model_class_name.safe_constantize
     end
 
     def test_file_path
@@ -107,6 +105,73 @@ module RailsProof
         declaration = line.strip
 
         declaration if declaration.match?(/\Avalidates\s+/)
+      end
+    end
+
+    def report_source_analysis
+      say "Source associations: #{association_declarations.count}"
+      association_declarations.each do |declaration|
+        say "  #{declaration}"
+      end
+
+      say "Source validations: #{validation_declarations.count}"
+      validation_declarations.each do |declaration|
+        say "  #{declaration}"
+      end
+    end
+
+    def report_runtime_analysis
+      unless model_class
+        say "Runtime inspection: unavailable"
+        return
+      end
+
+      inspector = RailsProof::ModelInspector.new(model_class)
+
+      say "Runtime inspection: available"
+      say "Table: #{inspector.table_name}"
+
+      report_runtime_columns(inspector)
+      report_runtime_associations(inspector)
+      report_runtime_validators(inspector)
+    end
+
+    def report_runtime_columns(inspector)
+      columns = inspector.columns
+
+      say "Columns: #{columns.count}"
+      columns.each do |column|
+        say(
+          "  #{column[:name]} #{column[:type]} " \
+          "null=#{column[:null]} default=#{column[:default].inspect}"
+        )
+      end
+    rescue ActiveRecord::StatementInvalid => error
+      say "Columns: unavailable (#{error.message.lines.first.strip})"
+    end
+
+    def report_runtime_associations(inspector)
+      associations = inspector.associations
+
+      say "Runtime associations: #{associations.count}"
+      associations.each do |association|
+        say(
+          "  #{association[:macro]} :#{association[:name]} " \
+          "class=#{association[:class_name]} " \
+          "foreign_key=#{association[:foreign_key]}"
+        )
+      end
+    end
+
+    def report_runtime_validators(inspector)
+      validators = inspector.validators
+
+      say "Runtime validators: #{validators.count}"
+      validators.each do |validator|
+        say(
+          "  #{validator[:class_name]} " \
+          "attributes=#{validator[:attributes].inspect}"
+        )
       end
     end
   end
