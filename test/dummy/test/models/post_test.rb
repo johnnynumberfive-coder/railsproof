@@ -19,4 +19,36 @@ class PostTest < ActiveSupport::TestCase
 
     assert record.errors.of_kind?(:title, :blank)
   end
+
+  test "title_matches? returns false for blank queries" do
+    post = Post.new(title: "Example title")
+
+    [nil, "", "   "].each do |query|
+      assert_not post.title_matches?(query), "expected #{query.inspect} not to match"
+    end
+  end
+
+  test "title_matches? performs a case insensitive substring match" do
+    post = Post.new(title: "Learning Rails")
+
+    assert post.title_matches?("RAILS")
+  end
+
+  test "title_matches? returns false when query is absent from title" do
+    post = Post.new(title: "Learning Rails")
+
+    assert_not post.title_matches?("Python")
+  end
+
+  test "title_matches? handles a nil title" do
+    post = Post.new(title: nil)
+
+    assert_not post.title_matches?("Rails")
+  end
+
+  test "title_matches? converts non-string queries to strings" do
+    post = Post.new(title: "Release 123")
+
+    assert post.title_matches?(123)
+  end
 end

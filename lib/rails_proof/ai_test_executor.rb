@@ -1,0 +1,169 @@
+require "pathname"
+require "rails_proof/ai_test_validator"
+require "rails_proof/ai_test_writer"
+require "rails_proof/test_runner"
+
+module RailsProof
+  class AiTestExecutor
+    Result = Struct.new(
+      :concern,
+      :status,
+      :errors,
+      :test_output,
+      keyword_init: true
+    ) do
+      def kept?
+        status == :kept
+      end
+
+      def rejected?
+        status == :rejected
+      end
+    end
+
+    attr_reader :root,
+      :test_file_path,
+      :test_class_name,
+      :superclass,
+      :concerns,
+      :runner_class
+
+    def initialize(
+      root:,
+      test_file_path:,
+      test_class_name:,
+      superclass:,
+      concerns:,
+      runner_class: RailsProof::TestRunner
+    )
+      @root = Pathname.new(root)
+      @test_file_path = test_file_path
+      @test_class_name = test_class_name
+      @superclass = superclass
+      @concerns = concerns
+      @runner_class = runner_class
+    end
+
+    def execute
+      concerns.map do |concern|
+        execute_concern(concern)
+      end
+    end
+
+    private
+
+    def execute_concern(concern)
+      test_code = concern[:test_code] || concern["test_code"]
+      validation = RailsProof::AiTestValidator.new(test_code).validate
+
+      unless validation.valid?
+        return Result.new(
+          concern: concern,
+          status: :rejected,
+          errors: validation.errors,
+          test_output: nil
+        )
+      end
+
+      previous_state = capture_file_state
+
+      write_candidate(concern)
+
+      test_result = runner.run
+
+      if test_result.passed?
+        Result.new(
+          concern: concern,
+          status: :kept,
+          errors: [],
+          test_output: test_result.output
+        )
+      else
+        restore_file_state(previous_state)
+
+        Result.new(
+          concern: concern,
+          status: :rejected,
+          errors: ["generated test failed"],
+          test_output: test_result.output
+        )
+      end
+    rescue StandardError => error
+      restore_file_state(previous_state) if defined?(previous_state)
+
+      Result.new(
+        concern: concern,
+        status: :rejected,
+        errors: [error.message],
+        test_output: nil
+      )
+    end
+
+    def absolute_test_file_path
+      @absolute_test_file_path ||=
+        root.join(test_file_path)
+    end
+
+    def capture_file_state
+      if absolute_test_file_path.file?
+        {
+          existed: true,
+          content: absolute_test_file_path.read
+        }
+      else
+        {
+          existed: false,
+          content: nil
+        }
+      end
+    end
+
+    def restore_file_state(state)
+      return unless state
+
+      if state[:existed]
+        absolute_test_file_path.write(state[:content])
+      elsif absolute_test_file_path.exist?
+        absolute_test_file_path.delete
+      end
+    end
+
+    def write_candidate(concern)
+      writer = RailsProof::AiTestWriter.new(
+        test_class_name: test_class_name,
+        superclass: superclass,
+        concerns: [concern]
+      )
+
+      if absolute_test_file_path.file?
+        insert_into_existing_file(writer.render)
+      else
+        absolute_test_file_path.dirname.mkpath
+        absolute_test_file_path.write(writer.render_test_file)
+      end
+    end
+
+    def insert_into_existing_file(rendered_test)
+      source = absolute_test_file_path.read
+
+      unless source.match?(/^end\s*\z/)
+        raise ArgumentError,
+          "RailsProof could not find the end of #{test_file_path}"
+      end
+
+      updated = source.sub(
+        /^end\s*\z/,
+        "\n#{rendered_test}\nend"
+      )
+
+      absolute_test_file_path.write(updated)
+    end
+
+    def runner
+      runner_class.new(
+        root: root,
+        test_file_path: test_file_path
+      )
+    end
+  end
+end

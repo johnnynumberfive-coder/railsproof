@@ -9,6 +9,8 @@ require "rails_proof/controller_inspector"
 require "rails_proof/controller_test_plan"
 require "rails_proof/controller_test_coverage_plan"
 require "rails_proof/controller_test_writer"
+require "rails_proof/ai_test_planner"
+require "rails_proof/ai_test_executor"
 
 module RailsProof
   class TestGenerator < Rails::Generators::Base
@@ -72,6 +74,22 @@ module RailsProof
 
       report_source_analysis
       report_runtime_analysis
+
+      if @model_class
+        concerns = report_ai_analysis(
+          target_type: :model,
+          class_name: @current_target.class_name,
+          source: @model_source,
+          deterministic_concerns: @model_test_plan.concerns
+        )
+
+        execute_ai_tests(
+          concerns: concerns,
+          test_class_name: "#{@current_target.class_name}Test",
+          superclass: "ActiveSupport::TestCase"
+        )
+      end
+
       write_missing_tests
     end
 
@@ -112,12 +130,31 @@ module RailsProof
       say "Test cases: #{@test_inspector.count}" if @absolute_test_file_path.file?
 
       report_controller_analysis
+
+      if @controller_class
+        concerns = report_ai_analysis(
+          target_type: :controller,
+          class_name: @current_target.class_name,
+          source: @controller_source,
+          deterministic_concerns: @controller_test_plan.concerns
+        )
+
+        execute_ai_tests(
+          concerns: concerns,
+          test_class_name: "#{@current_target.class_name}Test",
+          superclass: "ActionDispatch::IntegrationTest"
+        )
+      end
+
       write_missing_controller_tests
     end
 
     def prepare_controller_target(target)
       @current_target = target
       @controller_class = target.class_name.safe_constantize
+      @absolute_controller_path =
+        Pathname.new(destination_root).join(target.path)
+      @controller_source = @absolute_controller_path.read
 
       controller_name = target.path
         .delete_prefix("app/controllers/")
@@ -298,6 +335,92 @@ module RailsProof
 
       @controller_coverage_plan.missing_concerns.each do |concern|
         say "    #{concern[:description]}"
+      end
+    end
+
+    def report_ai_analysis(
+      target_type:,
+      class_name:,
+      source:,
+      deterministic_concerns:
+    )
+      planner = RailsProof::AiTestPlanner.new(
+        target_type: target_type,
+        class_name: class_name,
+        source: source,
+        existing_tests: @test_source,
+        deterministic_concerns: deterministic_concerns,
+        client: RailsProof.ai_client
+      )
+
+      concerns = planner.concerns
+
+      say "AI suggested tests: #{concerns.count}"
+
+      concerns.each do |concern|
+        say "  #{concern[:name]}"
+        say "    Reason: #{concern[:reason]}"
+
+        next unless concern[:test_code]
+
+        say "    Candidate test:"
+
+        concern[:test_code].each_line do |line|
+          say "      #{line.chomp}"
+        end
+      end
+
+      concerns
+    rescue RailsProof::AiTestPlanner::InvalidResponse,
+      RailsProof::OpenAiClient::Error => error
+      raise Thor::Error,
+        "RailsProof AI analysis failed: #{error.message}"
+    end
+
+    def execute_ai_tests(
+      concerns:,
+      test_class_name:,
+      superclass:
+    )
+      if concerns.empty?
+        say "AI test results: 0"
+        return
+      end
+
+      executor = RailsProof::AiTestExecutor.new(
+        root: destination_root,
+        test_file_path: @test_file_path,
+        test_class_name: test_class_name,
+        superclass: superclass,
+        concerns: concerns
+      )
+
+      results = executor.execute
+
+      say "AI test results: #{results.count}"
+
+      results.each do |result|
+        if result.kept?
+          say "  KEPT: #{result.concern[:name]}"
+        else
+          say "  REJECTED: #{result.concern[:name]}"
+
+          result.errors.each do |error|
+            say "    #{error}"
+          end
+
+          report_failed_test_output(result.test_output)
+        end
+      end
+    end
+
+    def report_failed_test_output(output)
+      return if output.blank?
+
+      say "    Test output:"
+
+      output.each_line do |line|
+        say "      #{line.chomp}"
       end
     end
 
