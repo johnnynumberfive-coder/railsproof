@@ -14,11 +14,15 @@ module RailsProof
           items: {
             type: :object,
             properties: {
+              kind: {
+                type: :string,
+                enum: %w[coverage contract_check]
+              },
               name: { type: :string },
               reason: { type: :string },
               test_code: { type: :string }
             },
-            required: %w[name reason test_code],
+            required: %w[kind name reason test_code],
             additionalProperties: false
           }
         }
@@ -87,6 +91,42 @@ module RailsProof
         Analyze Rails 8.1+ application code for meaningful Minitest coverage
         that deterministic Rails inspection cannot already identify.
 
+        RailsProof has two kinds of AI-generated tests:
+
+        1. coverage
+           The implementation and apparent public contract agree. Generate a
+           test that verifies meaningful behavior implemented by the source.
+
+        2. contract_check
+           Strong evidence in the supplied source suggests that the apparent
+           public contract may disagree with the implementation. Generate a
+           test for the apparent intended contract, even when the current
+           implementation is likely to make that test fail.
+
+        Do not assume that the current implementation is correct merely
+        because it is the code that was supplied.
+
+        Look for strong local evidence of an implementation/contract mismatch,
+        including:
+        - method names whose semantics conflict with the implementation
+        - comments or surrounding code that contradict the implementation
+        - predicates whose implementation appears opposite to their name
+        - exact/equality semantics implemented as partial matching, or the
+          reverse
+        - state-changing method names whose implementation changes the wrong
+          state
+        - error-signaling method names whose implementation silently ignores
+          the error condition
+        - branches whose outcomes appear reversed relative to the public API
+
+        A contract_check must be supported by strong evidence in the supplied
+        source. Do not invent product requirements or speculate about behavior
+        when the intended contract is genuinely ambiguous.
+
+        If you identify behavior as a possible contract mismatch, do NOT also
+        generate a coverage test whose purpose is merely to lock that
+        suspicious implementation into the test suite.
+
         Suggest only additional tests justified by the supplied source and
         runtime context.
 
@@ -94,8 +134,6 @@ module RailsProof
 
         Do not suggest behavior that is already adequately covered by the
         supplied existing tests.
-
-        Do not invent application behavior unsupported by the source.
 
         Focus especially on:
         - branches and conditional behavior
@@ -107,14 +145,20 @@ module RailsProof
         - side effects
         - error conditions
         - interactions between application objects
+        - possible implementation/contract disagreements
 
         For every suggestion, generate the actual Minitest code needed to
         exercise that behavior.
 
         Each suggestion must have:
+        - kind: either "coverage" or "contract_check"
         - name: a concise Minitest-style test description
         - reason: why that behavior deserves a test
         - test_code: exactly one complete Minitest test block
+
+        For a contract_check, the reason must explicitly describe:
+        - the evidence for the apparent contract
+        - how the implementation appears to disagree with that contract
 
         test_code must:
         - begin with a Minitest test declaration

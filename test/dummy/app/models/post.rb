@@ -8,4 +8,10 @@ class Post < ApplicationRecord
 
     title.to_s.downcase.include?(query.to_s.downcase)
   end
+
+  def title_matches_exactly?(query)
+    return false if query.blank?
+
+    title.to_s.downcase == query.to_s.downcase
+  end
 end

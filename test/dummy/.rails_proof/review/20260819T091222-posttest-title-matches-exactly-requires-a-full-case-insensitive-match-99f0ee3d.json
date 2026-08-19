@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "status": "needs_review",
+  "created_at": "2026-08-19T09:12:22Z",
+  "target_path": "app/models/post.rb",
+  "test_file_path": "test/models/post_test.rb",
+  "test_class_name": "PostTest",
+  "name": "title_matches_exactly? requires a full case-insensitive match",
+  "reason": "The method name `title_matches_exactly?` strongly indicates equality semantics, while the implementation uses `include?`, which accepts partial substring matches. The intended exact-match contract should accept a title differing only by case but reject a query containing only part of the title.",
+  "test_code": "test \"title_matches_exactly? requires a full case-insensitive match\" do\n  post = Post.new(title: \"Learning Rails\")\n\n  assert post.title_matches_exactly?(\"LEARNING RAILS\")\n  assert_not post.title_matches_exactly?(\"Rails\")\nend",
+  "test_output": "Run options: --seed 49547\n\n# Running:\n\n...F\n\nFailure:\nPostTest#test_title_matches_exactly?_requires_a_full_case-insensitive_match [test/models/post_test.rb:59]:\nExpected true to be nil or false\n\nbin/test test/models/post_test.rb:55\n\n....\n\nFinished in 0.025122s, 318.4497 runs/s, 477.6745 assertions/s.\n8 runs, 12 assertions, 1 failures, 0 errors, 0 skips\n"
+}

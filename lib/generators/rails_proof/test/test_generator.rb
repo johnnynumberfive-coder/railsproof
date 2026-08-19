@@ -389,6 +389,7 @@ module RailsProof
 
       executor = RailsProof::AiTestExecutor.new(
         root: destination_root,
+        target_path: @current_target.path,
         test_file_path: @test_file_path,
         test_class_name: test_class_name,
         superclass: superclass,
@@ -400,18 +401,54 @@ module RailsProof
       say "AI test results: #{results.count}"
 
       results.each do |result|
-        if result.kept?
-          say "  KEPT: #{result.concern[:name]}"
-        else
-          say "  REJECTED: #{result.concern[:name]}"
-
-          result.errors.each do |error|
-            say "    #{error}"
-          end
-
-          report_failed_test_output(result.test_output)
-        end
+        report_ai_test_result(result)
       end
+    end
+
+    def report_ai_test_result(result)
+      if result.kept?
+        say "  KEPT: #{result.concern[:name]}"
+      elsif result.needs_review?
+        report_needs_review(result)
+      else
+        report_rejected(result)
+      end
+    end
+
+    def report_needs_review(result)
+      say "  NEEDS REVIEW: #{result.concern[:name]}"
+
+      result.errors.each do |error|
+        say "    #{error}"
+      end
+
+      if result.review_path
+        say "    Review saved: #{display_review_path(result.review_path)}"
+      else
+        say "    Review could not be saved."
+      end
+
+      report_failed_test_output(result.test_output)
+    end
+
+    def report_rejected(result)
+      say "  REJECTED: #{result.concern[:name]}"
+
+      result.errors.each do |error|
+        say "    #{error}"
+      end
+
+      report_failed_test_output(result.test_output)
+    end
+
+    def display_review_path(path)
+      pathname = Pathname.new(path)
+
+      pathname.relative_path_from(
+        Pathname.new(destination_root)
+      ).to_s
+    rescue ArgumentError
+      pathname.to_s
     end
 
     def report_failed_test_output(output)

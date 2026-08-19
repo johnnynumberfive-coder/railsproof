@@ -2,6 +2,11 @@ module RailsProof
   class AiTestPlanner
     class InvalidResponse < StandardError; end
 
+    VALID_KINDS = %i[
+      coverage
+      contract_check
+    ].freeze
+
     attr_reader :target_type,
       :class_name,
       :source,
@@ -60,6 +65,10 @@ module RailsProof
           "AI test suggestion must be a hash-like object"
       end
 
+      kind = normalize_kind(
+        suggestion[:kind] || suggestion["kind"]
+      )
+
       name = suggestion[:name] || suggestion["name"]
       reason = suggestion[:reason] || suggestion["reason"]
       test_code = suggestion[:test_code] || suggestion["test_code"]
@@ -82,6 +91,7 @@ module RailsProof
 
       concern = {
         type: :ai,
+        kind: kind,
         name: name.strip,
         reason: reason.strip,
         description: name.strip
@@ -90,6 +100,19 @@ module RailsProof
       concern[:test_code] = test_code.strip if test_code.present?
 
       concern
+    end
+
+    def normalize_kind(value)
+      return :coverage if value.nil?
+
+      kind = value.to_s.strip.to_sym
+
+      unless VALID_KINDS.include?(kind)
+        raise InvalidResponse,
+          "AI test suggestion kind must be coverage or contract_check"
+      end
+
+      kind
     end
   end
 end

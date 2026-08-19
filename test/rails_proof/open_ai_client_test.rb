@@ -63,7 +63,7 @@ class RailsProof::OpenAiClientTest < ActiveSupport::TestCase
     assert_equal "class Post; end", context["source"]
   end
 
-  test "requests strict structured output with test code" do
+  test "requests strict structured output with suggestion kind" do
     sdk_client = fake_client(
       suggestions: []
     )
@@ -92,12 +92,18 @@ class RailsProof::OpenAiClientTest < ActiveSupport::TestCase
       format[:schema]
         .dig(:properties, :suggestions, :items)
 
+    assert_includes suggestion_schema[:required], "kind"
     assert_includes suggestion_schema[:required], "name"
     assert_includes suggestion_schema[:required], "reason"
     assert_includes suggestion_schema[:required], "test_code"
+
+    assert_equal(
+      %w[coverage contract_check],
+      suggestion_schema.dig(:properties, :kind, :enum)
+    )
   end
 
-  test "instructs the model to generate Minitest code" do
+  test "instructs the model to generate coverage and contract checks" do
     sdk_client = fake_client(
       suggestions: []
     )
@@ -116,14 +122,22 @@ class RailsProof::OpenAiClientTest < ActiveSupport::TestCase
 
     assert_includes prompt, "Minitest"
     assert_includes prompt, "test_code"
-    assert_includes prompt, "exactly one complete Minitest test block"
+    assert_includes prompt, "coverage"
+    assert_includes prompt, "contract_check"
+    assert_includes prompt,
+      "Do not assume that the current implementation is correct"
+    assert_includes prompt,
+      "do NOT also"
+    assert_includes prompt,
+      "exactly one complete Minitest test block"
     assert_includes prompt, "no Markdown code fences"
   end
 
-  test "returns structured test suggestions with candidate code" do
+  test "returns structured coverage and contract check suggestions" do
     sdk_client = fake_client(
       suggestions: [
         {
+          kind: "coverage",
           name: "publish! sets published_at",
           reason: "The method changes publication state.",
           test_code: <<~RUBY
@@ -137,15 +151,14 @@ class RailsProof::OpenAiClientTest < ActiveSupport::TestCase
           RUBY
         },
         {
-          name: "publish! persists the change",
-          reason: "The method uses persistent state.",
+          kind: "contract_check",
+          name: "exact match rejects partial matches",
+          reason: "The public method name implies exact equality but the implementation uses substring matching.",
           test_code: <<~RUBY
-            test "publish! persists the change" do
-              post = Post.create!
+            test "exact match rejects partial matches" do
+              post = Post.new(title: "Learning Rails")
 
-              post.publish!
-
-              assert_not_nil post.reload.published_at
+              assert_not post.title_matches_exactly?("Rails")
             end
           RUBY
         }
@@ -164,30 +177,20 @@ class RailsProof::OpenAiClientTest < ActiveSupport::TestCase
 
     assert_equal 2, suggestions.count
 
+    assert_equal "coverage", suggestions[0]["kind"]
     assert_equal(
       "publish! sets published_at",
       suggestions[0]["name"]
     )
-    assert_equal(
-      "The method changes publication state.",
-      suggestions[0]["reason"]
-    )
-    assert_includes(
-      suggestions[0]["test_code"],
-      'test "publish! sets published_at" do'
-    )
 
+    assert_equal "contract_check", suggestions[1]["kind"]
     assert_equal(
-      "publish! persists the change",
+      "exact match rejects partial matches",
       suggestions[1]["name"]
-    )
-    assert_equal(
-      "The method uses persistent state.",
-      suggestions[1]["reason"]
     )
     assert_includes(
       suggestions[1]["test_code"],
-      'test "publish! persists the change" do'
+      'assert_not post.title_matches_exactly?("Rails")'
     )
   end
 

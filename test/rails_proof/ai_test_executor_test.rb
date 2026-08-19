@@ -28,6 +28,22 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
     end
   end
 
+  class FakeReviewStore
+    attr_reader :reviews
+
+    def initialize
+      @reviews = []
+    end
+
+    def save(**review)
+      reviews << review
+
+      Pathname.new(
+        "/fake/reviews/review-#{reviews.count}.json"
+      )
+    end
+  end
+
   setup do
     FakeRunner.results = []
   end
@@ -40,8 +56,11 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
         passing_result
       ]
 
+      review_store = FakeReviewStore.new
+
       executor = build_executor(
         root: root,
+        review_store: review_store,
         concerns: [
           valid_concern(
             name: "matches case insensitively",
@@ -54,6 +73,10 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
 
       assert_equal 1, results.count
       assert results.first.kept?
+      refute results.first.needs_review?
+      refute results.first.rejected?
+      assert_nil results.first.review_path
+      assert_empty review_store.reviews
 
       source = test_file(root).read
 
@@ -64,7 +87,7 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
     end
   end
 
-  test "rolls back a candidate when its test fails" do
+  test "marks a valid failing candidate as needing review" do
     with_test_app do |root|
       create_existing_test_file(root)
 
@@ -74,34 +97,94 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
         failing_result
       ]
 
+      review_store = FakeReviewStore.new
+
       executor = build_executor(
         root: root,
+        review_store: review_store,
         concerns: [
           valid_concern(
-            name: "bad test",
+            name: "possible application bug",
             assertion: "assert false"
           )
         ]
       )
 
       results = executor.execute
+      result = results.first
 
       assert_equal 1, results.count
-      assert results.first.rejected?
+      assert result.needs_review?
+      refute result.rejected?
+      refute result.kept?
+
       assert_equal before, test_file(root).read
-      assert_includes results.first.errors, "generated test failed"
-      assert_includes results.first.test_output, "failure output"
+
+      assert_includes(
+        result.errors,
+        "candidate test failed against application"
+      )
+
+      assert_includes result.test_output, "failure output"
+
+      assert_equal(
+        Pathname.new("/fake/reviews/review-1.json"),
+        result.review_path
+      )
+
+      assert_equal 1, review_store.reviews.count
     end
   end
 
-  test "rejects invalid AI code without modifying the file" do
+  test "persists the concern and failure output for review" do
+    with_test_app do |root|
+      create_existing_test_file(root)
+
+      FakeRunner.results = [
+        failing_result
+      ]
+
+      review_store = FakeReviewStore.new
+
+      concern = valid_concern(
+        name: "possible application bug",
+        assertion: "assert false"
+      )
+
+      executor = build_executor(
+        root: root,
+        review_store: review_store,
+        concerns: [concern]
+      )
+
+      executor.execute
+
+      review = review_store.reviews.first
+
+      assert_equal concern, review[:concern]
+      assert_equal failing_result.output, review[:test_output]
+      assert_equal(
+        "app/models/post.rb",
+        review[:target_path]
+      )
+      assert_equal(
+        "test/models/post_test.rb",
+        review[:test_file_path]
+      )
+      assert_equal "PostTest", review[:test_class_name]
+    end
+  end
+
+  test "rejects invalid AI code without storing it for review" do
     with_test_app do |root|
       create_existing_test_file(root)
 
       before = test_file(root).read
+      review_store = FakeReviewStore.new
 
       executor = build_executor(
         root: root,
+        review_store: review_store,
         concerns: [
           {
             type: :ai,
@@ -118,7 +201,10 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
       results = executor.execute
 
       assert results.first.rejected?
+      refute results.first.needs_review?
       assert_equal before, test_file(root).read
+      assert_empty review_store.reviews
+
       assert_includes(
         results.first.errors,
         "test code is not valid Ruby"
@@ -126,7 +212,7 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
     end
   end
 
-  test "keeps passing candidates and rolls back only a later failing candidate" do
+  test "keeps passing candidates and flags only a later failing candidate" do
     with_test_app do |root|
       create_existing_test_file(root)
 
@@ -135,15 +221,18 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
         failing_result
       ]
 
+      review_store = FakeReviewStore.new
+
       executor = build_executor(
         root: root,
+        review_store: review_store,
         concerns: [
           valid_concern(
             name: "good behavior",
             assertion: "assert true"
           ),
           valid_concern(
-            name: "bad behavior",
+            name: "possible bug",
             assertion: "assert false"
           )
         ]
@@ -152,12 +241,14 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
       results = executor.execute
 
       assert results[0].kept?
-      assert results[1].rejected?
+      assert results[1].needs_review?
 
       source = test_file(root).read
 
       assert_includes source, 'test "good behavior" do'
-      refute_includes source, 'test "bad behavior" do'
+      refute_includes source, 'test "possible bug" do'
+
+      assert_equal 1, review_store.reviews.count
     end
   end
 
@@ -167,8 +258,11 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
         passing_result
       ]
 
+      review_store = FakeReviewStore.new
+
       executor = build_executor(
         root: root,
+        review_store: review_store,
         concerns: [
           valid_concern(
             name: "new behavior",
@@ -181,6 +275,7 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
 
       assert results.first.kept?
       assert test_file(root).file?
+      assert_empty review_store.reviews
 
       source = test_file(root).read
 
@@ -197,11 +292,14 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
         failing_result
       ]
 
+      review_store = FakeReviewStore.new
+
       executor = build_executor(
         root: root,
+        review_store: review_store,
         concerns: [
           valid_concern(
-            name: "bad new behavior",
+            name: "possible bug in new target",
             assertion: "assert false"
           )
         ]
@@ -209,8 +307,47 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
 
       results = executor.execute
 
-      assert results.first.rejected?
+      assert results.first.needs_review?
+      refute results.first.rejected?
       refute test_file(root).exist?
+      assert_equal 1, review_store.reviews.count
+    end
+  end
+
+  test "keeps needs review status when review persistence fails" do
+    with_test_app do |root|
+      create_existing_test_file(root)
+
+      FakeRunner.results = [
+        failing_result
+      ]
+
+      review_store = Object.new
+
+      def review_store.save(**)
+        raise "disk is full"
+      end
+
+      executor = build_executor(
+        root: root,
+        review_store: review_store,
+        concerns: [
+          valid_concern(
+            name: "possible application bug",
+            assertion: "assert false"
+          )
+        ]
+      )
+
+      result = executor.execute.first
+
+      assert result.needs_review?
+      assert_nil result.review_path
+
+      assert_includes(
+        result.errors,
+        "RailsProof could not persist review: disk is full"
+      )
     end
   end
 
@@ -243,14 +380,20 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
     )
   end
 
-  def build_executor(root:, concerns:)
+  def build_executor(
+    root:,
+    concerns:,
+    review_store:
+  )
     RailsProof::AiTestExecutor.new(
       root: root,
+      target_path: "app/models/post.rb",
       test_file_path: "test/models/post_test.rb",
       test_class_name: "PostTest",
       superclass: "ActiveSupport::TestCase",
       concerns: concerns,
-      runner_class: FakeRunner
+      runner_class: FakeRunner,
+      review_store: review_store
     )
   end
 

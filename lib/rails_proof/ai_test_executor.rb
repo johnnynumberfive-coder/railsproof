@@ -2,6 +2,7 @@ require "pathname"
 require "rails_proof/ai_test_validator"
 require "rails_proof/ai_test_writer"
 require "rails_proof/test_runner"
+require "rails_proof/review_store"
 
 module RailsProof
   class AiTestExecutor
@@ -10,6 +11,7 @@ module RailsProof
       :status,
       :errors,
       :test_output,
+      :review_path,
       keyword_init: true
     ) do
       def kept?
@@ -19,14 +21,20 @@ module RailsProof
       def rejected?
         status == :rejected
       end
+
+      def needs_review?
+        status == :needs_review
+      end
     end
 
     attr_reader :root,
+      :target_path,
       :test_file_path,
       :test_class_name,
       :superclass,
       :concerns,
-      :runner_class
+      :runner_class,
+      :review_store
 
     def initialize(
       root:,
@@ -34,14 +42,19 @@ module RailsProof
       test_class_name:,
       superclass:,
       concerns:,
-      runner_class: RailsProof::TestRunner
+      target_path: nil,
+      runner_class: RailsProof::TestRunner,
+      review_store: nil
     )
       @root = Pathname.new(root)
+      @target_path = target_path
       @test_file_path = test_file_path
       @test_class_name = test_class_name
       @superclass = superclass
       @concerns = concerns
       @runner_class = runner_class
+      @review_store = review_store ||
+        RailsProof::ReviewStore.new(root: @root)
     end
 
     def execute
@@ -61,7 +74,8 @@ module RailsProof
           concern: concern,
           status: :rejected,
           errors: validation.errors,
-          test_output: nil
+          test_output: nil,
+          review_path: nil
         )
       end
 
@@ -76,16 +90,27 @@ module RailsProof
           concern: concern,
           status: :kept,
           errors: [],
-          test_output: test_result.output
+          test_output: test_result.output,
+          review_path: nil
         )
       else
         restore_file_state(previous_state)
 
+        review_path, persistence_error =
+          persist_review(
+            concern: concern,
+            test_output: test_result.output
+          )
+
+        errors = ["candidate test failed against application"]
+        errors << persistence_error if persistence_error
+
         Result.new(
           concern: concern,
-          status: :rejected,
-          errors: ["generated test failed"],
-          test_output: test_result.output
+          status: :needs_review,
+          errors: errors,
+          test_output: test_result.output,
+          review_path: review_path
         )
       end
     rescue StandardError => error
@@ -95,7 +120,8 @@ module RailsProof
         concern: concern,
         status: :rejected,
         errors: [error.message],
-        test_output: nil
+        test_output: nil,
+        review_path: nil
       )
     end
 
@@ -157,6 +183,23 @@ module RailsProof
       )
 
       absolute_test_file_path.write(updated)
+    end
+
+    def persist_review(concern:, test_output:)
+      path = review_store.save(
+        concern: concern,
+        test_output: test_output,
+        target_path: target_path,
+        test_file_path: test_file_path,
+        test_class_name: test_class_name
+      )
+
+      [path, nil]
+    rescue StandardError => error
+      [
+        nil,
+        "RailsProof could not persist review: #{error.message}"
+      ]
     end
 
     def runner

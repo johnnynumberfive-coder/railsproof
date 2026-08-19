@@ -1,4 +1,5 @@
 require "test_helper"
+require "json"
 require "generators/rails_proof/test/test_generator"
 
 class RailsProof::AiGeneratorTest < Rails::Generators::TestCase
@@ -78,6 +79,7 @@ class RailsProof::AiGeneratorTest < Rails::Generators::TestCase
     assert_includes output,
       "REJECTED: matches titles case-insensitively"
     assert_includes output, "test code is not valid Ruby"
+    refute_includes output, "NEEDS REVIEW:"
   end
 
   test "does not keep rejected AI test code" do
@@ -94,6 +96,84 @@ class RailsProof::AiGeneratorTest < Rails::Generators::TestCase
       'test "title_matches finds substrings case insensitively" do'
   end
 
+  test "marks a valid failing AI test as needing review" do
+    use_valid_failing_suggestion
+    create_failing_rails_runner
+
+    output = run_generator ["app/models/post.rb"]
+
+    assert_includes output, "AI test results: 1"
+    assert_includes output,
+      "NEEDS REVIEW: possible application bug"
+    assert_includes output,
+      "candidate test failed against application"
+    assert_includes output,
+      "Review saved: .rails_proof/review/"
+    assert_includes output, "Test output:"
+    assert_includes output, "failure output"
+
+    refute_includes output,
+      "REJECTED: possible application bug"
+  end
+
+  test "rolls a failing AI test out of the live test suite" do
+    use_valid_failing_suggestion
+    create_failing_rails_runner
+
+    run_generator ["app/models/post.rb"]
+
+    path = File.join(
+      destination_root,
+      "test/models/post_test.rb"
+    )
+
+    source = File.read(path)
+
+    refute_includes source,
+      'test "possible application bug" do'
+  end
+
+  test "persists a failing AI test for human review" do
+    use_valid_failing_suggestion
+    create_failing_rails_runner
+
+    run_generator ["app/models/post.rb"]
+
+    review_files = Dir[
+      File.join(
+        destination_root,
+        ".rails_proof/review/*.json"
+      )
+    ]
+
+    assert_equal 1, review_files.count
+
+    record = JSON.parse(
+      File.read(review_files.first)
+    )
+
+    assert_equal "needs_review", record["status"]
+    assert_equal "app/models/post.rb", record["target_path"]
+    assert_equal(
+      "test/models/post_test.rb",
+      record["test_file_path"]
+    )
+    assert_equal "PostTest", record["test_class_name"]
+    assert_equal(
+      "possible application bug",
+      record["name"]
+    )
+    assert_equal(
+      "The candidate disagrees with application behavior.",
+      record["reason"]
+    )
+    assert_includes(
+      record["test_code"],
+      'test "possible application bug" do'
+    )
+    assert_includes record["test_output"], "failure output"
+  end
+
   test "sends source and existing tests to AI" do
     run_generator ["app/models/post.rb"]
 
@@ -104,5 +184,60 @@ class RailsProof::AiGeneratorTest < Rails::Generators::TestCase
     assert_includes context[:source], "def title_matches?"
     assert context.key?(:existing_tests)
     assert context.key?(:deterministic_concerns)
+  end
+
+  private
+
+  def use_valid_failing_suggestion
+    @ai_client.suggestions = [
+      {
+        name: "possible application bug",
+        reason: "The candidate disagrees with application behavior.",
+        test_code: <<~RUBY
+          test "possible application bug" do
+            assert false
+          end
+        RUBY
+      }
+    ]
+  end
+
+  def create_failing_rails_runner
+    bin_directory = File.join(
+      destination_root,
+      "bin"
+    )
+
+    test_directory = File.join(
+      destination_root,
+      "test"
+    )
+
+    mkdir_p bin_directory
+    mkdir_p test_directory
+
+    runner_path = File.join(
+      bin_directory,
+      "rails"
+    )
+
+    File.write(
+      runner_path,
+      <<~RUBY
+        #!/usr/bin/env ruby
+
+        puts "1 runs, 1 assertions, 1 failures, 0 errors"
+        puts "failure output"
+
+        exit 1
+      RUBY
+    )
+
+    File.chmod(0o755, runner_path)
+
+    File.write(
+      File.join(test_directory, "test_helper.rb"),
+      ""
+    )
   end
 end
