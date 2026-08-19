@@ -4,6 +4,11 @@ require "rails_proof/model_test_plan"
 require "rails_proof/test_inspector"
 require "rails_proof/test_coverage_plan"
 require "rails_proof/test_writer"
+require "rails_proof/target_discovery"
+require "rails_proof/controller_inspector"
+require "rails_proof/controller_test_plan"
+require "rails_proof/controller_test_coverage_plan"
+require "rails_proof/controller_test_writer"
 
 module RailsProof
   class TestGenerator < Rails::Generators::Base
@@ -14,126 +19,153 @@ module RailsProof
       has_and_belongs_to_many
     ].freeze
 
-    argument :model_path,
+    argument :scope,
       type: :string,
-      required: true,
-      banner: "app/models/user.rb"
+      required: false,
+      banner: "[app/models/post.rb|app/models|app/controllers]"
 
-    def inspect_model
-      validate_model_path!
+    def run_rails_proof
+      say "RailsProof targets: #{targets.count}"
 
-      say "RailsProof inspection"
-      say "Model file: #{relative_model_path}"
-      say "Model class: #{model_class_name}"
-      say "Test file: #{test_file_path}"
-      say "Test status: #{test_file_status}"
-      say "Test cases: #{test_inspector.count}" if absolute_test_file_path.file?
+      if targets.empty?
+        say "No supported targets found."
+        return
+      end
 
-      report_source_analysis
-      report_runtime_analysis
-    end
-
-    def write_missing_tests
-      return unless model_class
-      return if coverage_plan.missing_count.zero?
-
-      writer = RailsProof::TestWriter.new(
-        model_class_name: model_class_name,
-        concerns: coverage_plan.missing_concerns
-      )
-
-      if absolute_test_file_path.file?
-        inject_into_file(
-          test_file_path,
-          "\n#{writer.render}\n",
-          before: /^end\s*\z/
-        )
-      else
-        create_file test_file_path, writer.render_test_file
+      targets.each_with_index do |target, index|
+        say "" if index.positive?
+        process_target(target)
       end
     end
 
     private
 
-    def relative_model_path
-      @relative_model_path ||= Pathname.new(model_path).cleanpath.to_s
+    def targets
+      @targets ||= RailsProof::TargetDiscovery.new(
+        root: destination_root,
+        scope: scope
+      ).targets
+    rescue ArgumentError => error
+      raise Thor::Error, error.message
     end
 
-    def absolute_model_path
-      @absolute_model_path ||= Pathname.new(destination_root).join(relative_model_path)
-    end
-
-    def validate_model_path!
-      unless relative_model_path.start_with?("app/models/") &&
-          relative_model_path.end_with?(".rb")
-        raise Thor::Error,
-          "Expected a Rails model path under app/models, got: #{model_path}"
+    def process_target(target)
+      case target.type
+      when :model
+        process_model(target)
+      when :controller
+        process_controller(target)
+      else
+        say "Unsupported target type: #{target.type}"
       end
-
-      return if absolute_model_path.file?
-
-      raise Thor::Error, "Model file not found: #{relative_model_path}"
     end
 
-    def model_name
-      @model_name ||= relative_model_path
+    def process_model(target)
+      prepare_model_target(target)
+
+      say "RailsProof inspection"
+      say "Model file: #{@current_target.path}"
+      say "Model class: #{@current_target.class_name}"
+      say "Test file: #{@test_file_path}"
+      say "Test status: #{test_file_status}"
+      say "Test cases: #{@test_inspector.count}" if @absolute_test_file_path.file?
+
+      report_source_analysis
+      report_runtime_analysis
+      write_missing_tests
+    end
+
+    def prepare_model_target(target)
+      @current_target = target
+      @model_class = target.class_name.safe_constantize
+      @absolute_model_path = Pathname.new(destination_root).join(target.path)
+      @model_source = @absolute_model_path.read
+
+      model_name = target.path
         .delete_prefix("app/models/")
         .delete_suffix(".rb")
+
+      prepare_test_target("test/models/#{model_name}_test.rb")
+
+      if @model_class
+        @runtime_inspector = RailsProof::ModelInspector.new(@model_class)
+        @model_test_plan = RailsProof::ModelTestPlan.new(@runtime_inspector)
+        @coverage_plan = RailsProof::TestCoveragePlan.new(
+          @model_test_plan,
+          @test_inspector
+        )
+      else
+        @runtime_inspector = nil
+        @model_test_plan = nil
+        @coverage_plan = nil
+      end
     end
 
-    def model_class_name
-      model_name.camelize
+    def process_controller(target)
+      prepare_controller_target(target)
+
+      say "RailsProof inspection"
+      say "Controller file: #{@current_target.path}"
+      say "Controller class: #{@current_target.class_name}"
+      say "Test file: #{@test_file_path}"
+      say "Test status: #{test_file_status}"
+      say "Test cases: #{@test_inspector.count}" if @absolute_test_file_path.file?
+
+      report_controller_analysis
+      write_missing_controller_tests
     end
 
-    def model_class
-      @model_class ||= model_class_name.safe_constantize
+    def prepare_controller_target(target)
+      @current_target = target
+      @controller_class = target.class_name.safe_constantize
+
+      controller_name = target.path
+        .delete_prefix("app/controllers/")
+        .delete_suffix(".rb")
+
+      prepare_test_target(
+        "test/controllers/#{controller_name}_test.rb"
+      )
+
+      if @controller_class
+        @controller_inspector = RailsProof::ControllerInspector.new(
+          @controller_class
+        )
+        @controller_test_plan = RailsProof::ControllerTestPlan.new(
+          @controller_inspector
+        )
+        @controller_coverage_plan =
+          RailsProof::ControllerTestCoveragePlan.new(
+            @controller_test_plan,
+            @test_inspector
+          )
+      else
+        @controller_inspector = nil
+        @controller_test_plan = nil
+        @controller_coverage_plan = nil
+      end
     end
 
-    def test_file_path
-      "test/models/#{model_name}_test.rb"
-    end
+    def prepare_test_target(test_file_path)
+      @test_file_path = test_file_path
+      @absolute_test_file_path =
+        Pathname.new(destination_root).join(@test_file_path)
 
-    def absolute_test_file_path
-      @absolute_test_file_path ||= Pathname.new(destination_root).join(test_file_path)
-    end
-
-    def test_file_status
-      absolute_test_file_path.file? ? "exists" : "missing"
-    end
-
-    def model_source
-      @model_source ||= absolute_model_path.read
-    end
-
-    def test_source
-      @test_source ||= if absolute_test_file_path.file?
-        absolute_test_file_path.read
+      @test_source = if @absolute_test_file_path.file?
+        @absolute_test_file_path.read
       else
         ""
       end
+
+      @test_inspector = RailsProof::TestInspector.new(@test_source)
     end
 
-    def test_inspector
-      @test_inspector ||= RailsProof::TestInspector.new(test_source)
-    end
-
-    def runtime_inspector
-      @runtime_inspector ||= RailsProof::ModelInspector.new(model_class)
-    end
-
-    def model_test_plan
-      @model_test_plan ||= RailsProof::ModelTestPlan.new(runtime_inspector)
-    end
-
-    def coverage_plan
-      @coverage_plan ||= RailsProof::TestCoveragePlan.new(
-        model_test_plan,
-        test_inspector
-      )
+    def test_file_status
+      @absolute_test_file_path.file? ? "exists" : "missing"
     end
 
     def association_declarations
-      @association_declarations ||= model_source.each_line.filter_map do |line|
+      @model_source.each_line.filter_map do |line|
         declaration = line.strip
 
         declaration if ASSOCIATION_MACROS.any? do |macro|
@@ -143,7 +175,7 @@ module RailsProof
     end
 
     def validation_declarations
-      @validation_declarations ||= model_source.each_line.filter_map do |line|
+      @model_source.each_line.filter_map do |line|
         declaration = line.strip
 
         declaration if declaration.match?(/\Avalidates\s+/)
@@ -151,25 +183,28 @@ module RailsProof
     end
 
     def report_source_analysis
-      say "Source associations: #{association_declarations.count}"
-      association_declarations.each do |declaration|
+      associations = association_declarations
+      validations = validation_declarations
+
+      say "Source associations: #{associations.count}"
+      associations.each do |declaration|
         say "  #{declaration}"
       end
 
-      say "Source validations: #{validation_declarations.count}"
-      validation_declarations.each do |declaration|
+      say "Source validations: #{validations.count}"
+      validations.each do |declaration|
         say "  #{declaration}"
       end
     end
 
     def report_runtime_analysis
-      unless model_class
+      unless @model_class
         say "Runtime inspection: unavailable"
         return
       end
 
       say "Runtime inspection: available"
-      say "Table: #{runtime_inspector.table_name}"
+      say "Table: #{@runtime_inspector.table_name}"
 
       report_runtime_columns
       report_runtime_associations
@@ -179,7 +214,7 @@ module RailsProof
     end
 
     def report_runtime_columns
-      columns = runtime_inspector.columns
+      columns = @runtime_inspector.columns
 
       say "Columns: #{columns.count}"
       columns.each do |column|
@@ -193,7 +228,7 @@ module RailsProof
     end
 
     def report_runtime_associations
-      associations = runtime_inspector.associations
+      associations = @runtime_inspector.associations
 
       say "Runtime associations: #{associations.count}"
       associations.each do |association|
@@ -206,7 +241,7 @@ module RailsProof
     end
 
     def report_runtime_validators
-      validators = runtime_inspector.validators
+      validators = @runtime_inspector.validators
 
       say "Runtime validators: #{validators.count}"
       validators.each do |validator|
@@ -218,19 +253,91 @@ module RailsProof
     end
 
     def report_test_plan
-      say "Suggested tests: #{model_test_plan.count}"
-      model_test_plan.concerns.each do |concern|
+      say "Suggested tests: #{@model_test_plan.count}"
+      @model_test_plan.concerns.each do |concern|
         say "  #{concern[:description]}"
       end
     end
 
     def report_coverage
       say "Coverage:"
-      say "  Covered: #{coverage_plan.covered_count}"
-      say "  Missing: #{coverage_plan.missing_count}"
+      say "  Covered: #{@coverage_plan.covered_count}"
+      say "  Missing: #{@coverage_plan.missing_count}"
 
-      coverage_plan.missing_concerns.each do |concern|
+      @coverage_plan.missing_concerns.each do |concern|
         say "    #{concern[:description]}"
+      end
+    end
+
+    def report_controller_analysis
+      unless @controller_class
+        say "Controller inspection: unavailable"
+        return
+      end
+
+      say "Controller inspection: available"
+
+      say "Actions: #{@controller_inspector.actions.count}"
+      @controller_inspector.actions.each do |action|
+        say "  #{action}"
+      end
+
+      say "Routes: #{@controller_inspector.routes.count}"
+      @controller_inspector.routes.each do |route|
+        say "  #{route[:verb]} #{route[:path]} -> #{route[:action]}"
+      end
+
+      say "Suggested tests: #{@controller_test_plan.count}"
+      @controller_test_plan.concerns.each do |concern|
+        say "  #{concern[:description]}"
+      end
+
+      say "Coverage:"
+      say "  Covered: #{@controller_coverage_plan.covered_count}"
+      say "  Missing: #{@controller_coverage_plan.missing_count}"
+
+      @controller_coverage_plan.missing_concerns.each do |concern|
+        say "    #{concern[:description]}"
+      end
+    end
+
+    def write_missing_tests
+      return unless @model_class
+      return if @coverage_plan.missing_count.zero?
+
+      writer = RailsProof::TestWriter.new(
+        model_class_name: @current_target.class_name,
+        concerns: @coverage_plan.missing_concerns
+      )
+
+      if @absolute_test_file_path.file?
+        inject_into_file(
+          @test_file_path,
+          "\n#{writer.render}\n",
+          before: /^end\s*\z/
+        )
+      else
+        create_file @test_file_path, writer.render_test_file
+      end
+    end
+
+    def write_missing_controller_tests
+      return unless @controller_class
+      return if @controller_coverage_plan.missing_count.zero?
+
+      writer = RailsProof::ControllerTestWriter.new(
+        controller_class_name: @current_target.class_name,
+        concerns: @controller_coverage_plan.missing_concerns
+      )
+
+      if @absolute_test_file_path.file?
+        inject_into_file(
+          @test_file_path,
+          "\n#{writer.render}\n",
+          before: /^end\s*\z/
+        )
+      else
+        create_file @test_file_path, writer.render_test_file
       end
     end
   end

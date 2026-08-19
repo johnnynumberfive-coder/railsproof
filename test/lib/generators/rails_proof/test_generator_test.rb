@@ -7,9 +7,10 @@ class RailsProof::TestGeneratorTest < Rails::Generators::TestCase
   setup :prepare_destination
   setup :create_user_model
 
-  test "inspects a Rails model with a missing test" do
+  test "inspects a single Rails model" do
     output = run_generator ["app/models/user.rb"]
 
+    assert_includes output, "RailsProof targets: 1"
     assert_includes output, "RailsProof inspection"
     assert_includes output, "Model file: app/models/user.rb"
     assert_includes output, "Model class: User"
@@ -135,6 +136,145 @@ class RailsProof::TestGeneratorTest < Rails::Generators::TestCase
     assert_equal before, File.read(path)
   end
 
+  test "discovers and processes every model in app/models" do
+    create_post_model
+
+    output = run_generator ["app/models"]
+
+    assert_includes output, "RailsProof targets: 2"
+    assert_includes output, "Model file: app/models/post.rb"
+    assert_includes output, "Model class: Post"
+    assert_includes output, "Model file: app/models/user.rb"
+    assert_includes output, "Model class: User"
+  end
+
+  test "reports controller actions and routes" do
+    create_posts_controller
+
+    output = run_generator ["app/controllers/posts_controller.rb"]
+
+    assert_includes output, "RailsProof targets: 1"
+    assert_includes output, "Controller file: app/controllers/posts_controller.rb"
+    assert_includes output, "Controller class: PostsController"
+    assert_includes output, "Test file: test/controllers/posts_controller_test.rb"
+    assert_includes output, "Test status: missing"
+    assert_includes output, "Controller inspection: available"
+    assert_includes output, "Actions: 2"
+    assert_includes output, "index"
+    assert_includes output, "show"
+    assert_includes output, "Routes: 2"
+    assert_includes output, "GET /posts/index -> index"
+    assert_includes output, "GET /posts/show -> show"
+  end
+
+  test "reports suggested controller tests" do
+    create_posts_controller
+
+    output = run_generator ["app/controllers/posts_controller.rb"]
+
+    assert_includes output, "Suggested tests: 2"
+    assert_includes output, "GET /posts/index responds successfully"
+    assert_includes output, "GET /posts/show responds successfully"
+  end
+
+  test "reports controller tests missing when no test file exists" do
+    create_posts_controller
+
+    output = run_generator ["app/controllers/posts_controller.rb"]
+
+    assert_includes output, "Coverage:"
+    assert_includes output, "Covered: 0"
+    assert_includes output, "Missing: 2"
+    assert_includes output, "GET /posts/index responds successfully"
+    assert_includes output, "GET /posts/show responds successfully"
+  end
+
+  test "recognizes Rails-generated controller tests as covered" do
+    create_posts_controller
+    create_rails_generated_posts_controller_test
+
+    output = run_generator ["app/controllers/posts_controller.rb"]
+
+    assert_includes output, "Test status: exists"
+    assert_includes output, "Test cases: 2"
+    assert_includes output, "Covered: 2"
+    assert_includes output, "Missing: 0"
+  end
+
+  test "reports partial controller coverage" do
+    create_posts_controller
+    create_partially_covered_posts_controller_test
+
+    output = run_generator ["app/controllers/posts_controller.rb"]
+
+    assert_includes output, "Test cases: 1"
+    assert_includes output, "Covered: 1"
+    assert_includes output, "Missing: 1"
+    assert_includes output, "GET /posts/show responds successfully"
+  end
+
+  test "creates a missing controller test file" do
+    create_posts_controller
+
+    run_generator ["app/controllers/posts_controller.rb"]
+
+    assert_file "test/controllers/posts_controller_test.rb" do |source|
+      assert_includes source, 'require "test_helper"'
+      assert_includes source,
+        "class PostsControllerTest < ActionDispatch::IntegrationTest"
+      assert_includes source, 'test "should get index" do'
+      assert_includes source, "get posts_index_url"
+      assert_includes source, 'test "should get show" do'
+      assert_includes source, "get posts_show_url"
+    end
+  end
+
+  test "adds only the missing controller test" do
+    create_posts_controller
+    create_partially_covered_posts_controller_test
+
+    run_generator ["app/controllers/posts_controller.rb"]
+
+    source = File.read(
+      File.join(
+        destination_root,
+        "test/controllers/posts_controller_test.rb"
+      )
+    )
+
+    assert_equal 1, source.scan('test "should get index" do').count
+    assert_equal 1, source.scan('test "should get show" do').count
+  end
+
+  test "does not modify a fully covered controller test" do
+    create_posts_controller
+    create_rails_generated_posts_controller_test
+
+    path = File.join(
+      destination_root,
+      "test/controllers/posts_controller_test.rb"
+    )
+    before = File.read(path)
+
+    run_generator ["app/controllers/posts_controller.rb"]
+
+    assert_equal before, File.read(path)
+  end
+
+  test "discovers the whole supported app when no scope is given" do
+    create_posts_controller
+    create_rails_generated_posts_controller_test
+
+    output = run_generator []
+
+    assert_includes output, "RailsProof targets: 2"
+    assert_includes output, "Model file: app/models/user.rb"
+    assert_includes output, "Controller file: app/controllers/posts_controller.rb"
+    assert_includes output, "Controller inspection: available"
+    assert_includes output, "Covered: 2"
+    assert_includes output, "Missing: 0"
+  end
+
   private
 
   def create_user_model
@@ -159,6 +299,23 @@ class RailsProof::TestGeneratorTest < Rails::Generators::TestCase
           belongs_to :user
 
           validates :title, presence: true
+        end
+      RUBY
+    )
+  end
+
+  def create_posts_controller
+    mkdir_p File.join(destination_root, "app/controllers")
+
+    File.write(
+      File.join(destination_root, "app/controllers/posts_controller.rb"),
+      <<~RUBY
+        class PostsController < ApplicationController
+          def index
+          end
+
+          def show
+          end
         end
       RUBY
     )
@@ -245,6 +402,47 @@ class RailsProof::TestGeneratorTest < Rails::Generators::TestCase
         class PostTest < ActiveSupport::TestCase
           test "belongs to user" do
             assert true
+          end
+        end
+      RUBY
+    )
+  end
+
+  def create_rails_generated_posts_controller_test
+    mkdir_p File.join(destination_root, "test/controllers")
+
+    File.write(
+      File.join(destination_root, "test/controllers/posts_controller_test.rb"),
+      <<~RUBY
+        require "test_helper"
+
+        class PostsControllerTest < ActionDispatch::IntegrationTest
+          test "should get index" do
+            get posts_index_url
+            assert_response :success
+          end
+
+          test "should get show" do
+            get posts_show_url
+            assert_response :success
+          end
+        end
+      RUBY
+    )
+  end
+
+  def create_partially_covered_posts_controller_test
+    mkdir_p File.join(destination_root, "test/controllers")
+
+    File.write(
+      File.join(destination_root, "test/controllers/posts_controller_test.rb"),
+      <<~RUBY
+        require "test_helper"
+
+        class PostsControllerTest < ActionDispatch::IntegrationTest
+          test "should get index" do
+            get posts_index_url
+            assert_response :success
           end
         end
       RUBY
