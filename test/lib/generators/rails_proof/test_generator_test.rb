@@ -84,46 +84,55 @@ class RailsProof::TestGeneratorTest < Rails::Generators::TestCase
     refute_includes output, "validates presence of user"
   end
 
-  test "reports all suggested tests missing when the test is empty" do
+  test "creates a missing model test with suggested tests" do
+    create_post_model
+
+    run_generator ["app/models/post.rb"]
+
+    assert_file "test/models/post_test.rb" do |source|
+      assert_includes source, 'require "test_helper"'
+      assert_includes source, "class PostTest < ActiveSupport::TestCase"
+      assert_includes source, 'test "belongs to user" do'
+      assert_includes source, 'test "validates presence of title" do'
+    end
+  end
+
+  test "adds missing tests to an existing empty model test" do
     create_post_model
     create_empty_post_test
 
-    output = run_generator ["app/models/post.rb"]
+    run_generator ["app/models/post.rb"]
 
-    assert_includes output, "Coverage:"
-    assert_includes output, "Covered: 0"
-    assert_includes output, "Missing: 2"
-    assert_includes output, "belongs_to :user"
-    assert_includes output, "validates presence of title"
+    assert_file "test/models/post_test.rb" do |source|
+      assert_includes source, 'test "belongs to user" do'
+      assert_includes source, 'test "validates presence of title" do'
+    end
   end
 
-  test "reports suggested tests as covered when matching tests exist" do
-    create_post_model
-    create_covered_post_test
-
-    output = run_generator ["app/models/post.rb"]
-
-    assert_includes output, "Test cases: 2"
-    assert_includes output, "Coverage:"
-    assert_includes output, "Covered: 2"
-    assert_includes output, "Missing: 0"
-  end
-
-  test "reports partial test coverage" do
+  test "adds only the missing test to a partially covered model test" do
     create_post_model
     create_partially_covered_post_test
 
-    output = run_generator ["app/models/post.rb"]
+    run_generator ["app/models/post.rb"]
 
-    assert_includes output, "Covered: 1"
-    assert_includes output, "Missing: 1"
-    assert_includes output, "validates presence of title"
+    source = File.read(
+      File.join(destination_root, "test/models/post_test.rb")
+    )
+
+    assert_equal 1, source.scan('test "belongs to user" do').count
+    assert_equal 1, source.scan('test "validates presence of title" do').count
   end
 
-  test "does not create the model test yet" do
-    run_generator ["app/models/user.rb"]
+  test "does not modify a fully covered model test" do
+    create_post_model
+    create_covered_post_test
 
-    assert_no_file "test/models/user_test.rb"
+    path = File.join(destination_root, "test/models/post_test.rb")
+    before = File.read(path)
+
+    run_generator ["app/models/post.rb"]
+
+    assert_equal before, File.read(path)
   end
 
   private
@@ -217,7 +226,7 @@ class RailsProof::TestGeneratorTest < Rails::Generators::TestCase
             assert true
           end
 
-          test "title is required" do
+          test "validates presence of title" do
             assert true
           end
         end

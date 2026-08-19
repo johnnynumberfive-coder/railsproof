@@ -3,6 +3,7 @@ require "rails_proof/model_inspector"
 require "rails_proof/model_test_plan"
 require "rails_proof/test_inspector"
 require "rails_proof/test_coverage_plan"
+require "rails_proof/test_writer"
 
 module RailsProof
   class TestGenerator < Rails::Generators::Base
@@ -30,6 +31,26 @@ module RailsProof
 
       report_source_analysis
       report_runtime_analysis
+    end
+
+    def write_missing_tests
+      return unless model_class
+      return if coverage_plan.missing_count.zero?
+
+      writer = RailsProof::TestWriter.new(
+        model_class_name: model_class_name,
+        concerns: coverage_plan.missing_concerns
+      )
+
+      if absolute_test_file_path.file?
+        inject_into_file(
+          test_file_path,
+          "\n#{writer.render}\n",
+          before: /^end\s*\z/
+        )
+      else
+        create_file test_file_path, writer.render_test_file
+      end
     end
 
     private
@@ -96,6 +117,21 @@ module RailsProof
       @test_inspector ||= RailsProof::TestInspector.new(test_source)
     end
 
+    def runtime_inspector
+      @runtime_inspector ||= RailsProof::ModelInspector.new(model_class)
+    end
+
+    def model_test_plan
+      @model_test_plan ||= RailsProof::ModelTestPlan.new(runtime_inspector)
+    end
+
+    def coverage_plan
+      @coverage_plan ||= RailsProof::TestCoveragePlan.new(
+        model_test_plan,
+        test_inspector
+      )
+    end
+
     def association_declarations
       @association_declarations ||= model_source.each_line.filter_map do |line|
         declaration = line.strip
@@ -132,21 +168,18 @@ module RailsProof
         return
       end
 
-      inspector = RailsProof::ModelInspector.new(model_class)
-      plan = RailsProof::ModelTestPlan.new(inspector)
-
       say "Runtime inspection: available"
-      say "Table: #{inspector.table_name}"
+      say "Table: #{runtime_inspector.table_name}"
 
-      report_runtime_columns(inspector)
-      report_runtime_associations(inspector)
-      report_runtime_validators(inspector)
-      report_test_plan(plan)
-      report_coverage(plan)
+      report_runtime_columns
+      report_runtime_associations
+      report_runtime_validators
+      report_test_plan
+      report_coverage
     end
 
-    def report_runtime_columns(inspector)
-      columns = inspector.columns
+    def report_runtime_columns
+      columns = runtime_inspector.columns
 
       say "Columns: #{columns.count}"
       columns.each do |column|
@@ -159,8 +192,8 @@ module RailsProof
       say "Columns: unavailable (#{error.message.lines.first.strip})"
     end
 
-    def report_runtime_associations(inspector)
-      associations = inspector.associations
+    def report_runtime_associations
+      associations = runtime_inspector.associations
 
       say "Runtime associations: #{associations.count}"
       associations.each do |association|
@@ -172,8 +205,8 @@ module RailsProof
       end
     end
 
-    def report_runtime_validators(inspector)
-      validators = inspector.validators
+    def report_runtime_validators
+      validators = runtime_inspector.validators
 
       say "Runtime validators: #{validators.count}"
       validators.each do |validator|
@@ -184,21 +217,19 @@ module RailsProof
       end
     end
 
-    def report_test_plan(plan)
-      say "Suggested tests: #{plan.count}"
-      plan.concerns.each do |concern|
+    def report_test_plan
+      say "Suggested tests: #{model_test_plan.count}"
+      model_test_plan.concerns.each do |concern|
         say "  #{concern[:description]}"
       end
     end
 
-    def report_coverage(plan)
-      coverage = RailsProof::TestCoveragePlan.new(plan, test_inspector)
-
+    def report_coverage
       say "Coverage:"
-      say "  Covered: #{coverage.covered_count}"
-      say "  Missing: #{coverage.missing_count}"
+      say "  Covered: #{coverage_plan.covered_count}"
+      say "  Missing: #{coverage_plan.missing_count}"
 
-      coverage.missing_concerns.each do |concern|
+      coverage_plan.missing_concerns.each do |concern|
         say "    #{concern[:description]}"
       end
     end
