@@ -2,18 +2,18 @@
 
 > **You write the Rails app. We write the tests.**
 
-RailsProof analyzes a Rails application, discovers behavior that should be tested, writes Minitest tests, and verifies generated tests against the application before keeping them.
+RailsProof analyzes a Rails application, discovers behavior that should be tested, writes ordinary Minitest tests, and verifies generated tests against the application before deciding what to keep.
 
 It combines two approaches:
 
-1. **Deterministic Rails inspection** for behavior RailsProof can identify with certainty.
+1. **Deterministic Rails inspection** for behavior RailsProof can identify with confidence.
 2. **AI-assisted analysis** for application-specific behavior that a fixed rule engine cannot reasonably anticipate.
 
 RailsProof is being developed for modern Rails applications, with current development targeting **Rails 8.1+** and **Ruby 4.0+**.
 
 > **Status: Early development**
 >
-> RailsProof is under active development. Its behavior and public API may change. Use version control when trying it on real applications.
+> RailsProof is under active development ahead of its first public release. Its behavior and public API may change. Use version control when trying it on real applications.
 
 ---
 
@@ -42,7 +42,7 @@ belongs_to :user
 validates presence of title
 ```
 
-It can then use AI to analyze the custom application behavior and discover additional useful coverage such as:
+It can then use AI to analyze custom application behavior and discover useful coverage such as:
 
 ```text
 title_matches? returns false for blank queries
@@ -51,11 +51,22 @@ title_matches? returns false when the query is absent from the title
 title_matches? handles a nil title
 ```
 
-RailsProof generates candidate Minitest code for those behaviors, validates it, inserts each candidate individually, and runs the test.
+RailsProof generates candidate Minitest code, validates it, inserts one candidate at a time, and runs the actual Rails test suite against that candidate.
 
-A passing candidate is kept.
+A candidate that passes can become permanent coverage.
 
-A failing candidate is rolled back.
+A candidate that fails is **not automatically assumed to be wrong**.
+
+That distinction matters.
+
+A failing generated test may mean:
+
+- the generated test is incorrect
+- the application contains a bug
+- the test exposed a contract mismatch
+- the application and candidate simply disagree about intended behavior
+
+RailsProof preserves that distinction instead of silently throwing useful evidence away.
 
 ---
 
@@ -67,25 +78,33 @@ Run RailsProof against the entire supported application:
 rails generate rails_proof:test
 ```
 
-Or inspect a specific model:
+Inspect a specific model:
 
 ```bash
 rails generate rails_proof:test app/models/post.rb
 ```
 
-A directory:
+Inspect all models:
 
 ```bash
 rails generate rails_proof:test app/models
 ```
 
-Or controllers:
+Inspect a controller:
+
+```bash
+rails generate rails_proof:test app/controllers/posts_controller.rb
+```
+
+Or inspect all controllers:
 
 ```bash
 rails generate rails_proof:test app/controllers
 ```
 
-There is no separate AI mode or special flag to remember. AI analysis is part of the normal RailsProof workflow.
+There is no separate AI mode and no `--ai` flag.
+
+AI analysis is part of the normal RailsProof workflow.
 
 ---
 
@@ -114,6 +133,9 @@ Existing test analysis
 AI behavior analysis
       |
       v
+Deterministic AI deduplication
+      |
+      v
 Candidate Minitest generation
       |
       v
@@ -125,22 +147,374 @@ Insert one candidate
       v
 Run the actual test
       |
-      +---- PASS ----> keep the test
+      +---- PASS -----------------> KEPT
       |
-      +---- FAIL ----> restore the previous file
+      +---- FAIL -----------------> restore live test file
+                                     |
+                                     v
+                                NEEDS REVIEW
+                                     |
+                                     v
+                           persist review evidence
 ```
 
-RailsProof owns the files and execution process.
+Malformed or unusable generated tests are:
 
-AI supplies reasoning and candidate tests.
+```text
+REJECTED
+```
 
-The Rails test runner gets the final vote.
+Tests already covered, duplicated in the same AI response, or already represented by an unresolved review finding are:
+
+```text
+SKIPPED
+```
+
+RailsProof owns the file mutation, validation, execution, rollback, review storage, and deduplication process.
+
+AI supplies analysis and candidate tests.
+
+The Rails test runner determines whether a candidate agrees with the application as it currently exists.
+
+The developer remains responsible for deciding whether a disagreement represents an application bug or an incorrect expectation.
+
+---
+
+## Result States
+
+AI-generated candidate tests currently have four possible outcomes.
+
+### KEPT
+
+```text
+KEPT: title_matches? handles a nil title
+```
+
+The candidate was structurally valid and passed against the application.
+
+RailsProof leaves the test in the live test suite.
+
+A passing test proves that the candidate expectation is compatible with the current implementation. It does not, by itself, prove that the implementation is correct.
+
+### NEEDS REVIEW
+
+```text
+NEEDS REVIEW: title_matches_exactly? rejects partial title matches
+  candidate test failed against application
+  Review saved: .rails_proof/review/...
+```
+
+The candidate was structurally valid but failed against the application.
+
+RailsProof:
+
+1. restores the live test file to its previous state
+2. preserves the candidate test
+3. preserves the reason it was generated
+4. preserves the test-run failure output
+5. records the finding for human review
+
+A failing valid test is evidence of a disagreement, not proof that the generated test is bad.
+
+### REJECTED
+
+```text
+REJECTED: malformed generated test
+  test code is not valid Ruby
+```
+
+The generated candidate itself is unusable.
+
+Examples include:
+
+- invalid Ruby
+- missing or multiple test declarations
+- class declarations inside the candidate
+- `require` statements
+- Markdown code fences
+- other structurally invalid generated output
+
+Rejected tests are not preserved as application-bug findings because RailsProof could not establish that they were valid candidate tests.
+
+### SKIPPED
+
+```text
+SKIPPED: title_matches_exactly? requires the whole title to match
+  already awaiting human review
+```
+
+RailsProof determined that executing the candidate would add no useful new information.
+
+Current skip reasons include:
+
+```text
+already exists in test suite
+already awaiting human review
+duplicate AI suggestion
+```
+
+---
+
+## Contract Checks
+
+RailsProof does not assume that the current implementation is automatically the intended contract.
+
+This is especially important for AI-assisted testing.
+
+Consider:
+
+```ruby
+def title_matches_exactly?(query)
+  return false if query.blank?
+
+  title.to_s.downcase.include?(query.to_s.downcase)
+end
+```
+
+The method is named:
+
+```text
+title_matches_exactly?
+```
+
+but its implementation performs a substring match with:
+
+```ruby
+include?
+```
+
+A test generator that blindly treats implementation as specification might generate tests proving that partial matches succeed and permanently encode the bug into the test suite.
+
+RailsProof's AI protocol distinguishes two kinds of suggestions.
+
+### coverage
+
+A `coverage` suggestion tests behavior where the implementation and apparent contract agree.
+
+For example:
+
+```text
+title_matches? returns false for blank queries
+```
+
+### contract_check
+
+A `contract_check` is used when strong evidence in the source suggests that the apparent public contract and implementation disagree.
+
+For example:
+
+```text
+title_matches_exactly? rejects partial title matches
+```
+
+RailsProof may generate:
+
+```ruby
+test "title_matches_exactly? rejects partial title matches" do
+  post = Post.new(title: "Learning Rails")
+
+  assert_not post.title_matches_exactly?("Rails")
+end
+```
+
+If the implementation uses `include?`, that test fails.
+
+RailsProof does not delete the evidence and does not leave the failing test in the live suite.
+
+It produces:
+
+```text
+NEEDS REVIEW
+```
+
+That gives the developer a concrete test, a reason, and the actual failure output to evaluate.
+
+---
+
+## Human Review
+
+RailsProof treats failing valid generated tests differently from malformed generated tests.
+
+That distinction is intentional.
+
+Suppose RailsProof finds:
+
+```text
+Method: title_matches_exactly?
+Implementation: include?
+```
+
+and generates a test requiring a full-title match.
+
+If the test fails, RailsProof cannot safely conclude:
+
+```text
+the AI was wrong
+```
+
+It also cannot safely conclude:
+
+```text
+the application is wrong
+```
+
+Instead it records:
+
+```text
+application behavior and candidate expectation disagree
+```
+
+and asks for human judgment.
+
+Review findings are currently stored beneath:
+
+```text
+.rails_proof/review/
+```
+
+A review record contains information such as:
+
+```text
+status
+created_at
+last_seen_at
+occurrences
+target_path
+target_fingerprint
+test_file_path
+test_class_name
+kind
+name
+reason
+test_code
+test_fingerprint
+test_output
+```
+
+The review workflow is still evolving, but the underlying evidence is already preserved rather than discarded.
+
+---
+
+## Review Deduplication and Convergence
+
+AI output is nondeterministic.
+
+The same underlying behavior might be described differently on separate runs:
+
+```text
+title_matches_exactly? requires a case-insensitive full-title match
+```
+
+then:
+
+```text
+title_matches_exactly? requires the entire title to match
+```
+
+then:
+
+```text
+title_matches_exactly? rejects partial title matches
+```
+
+RailsProof does not rely only on those human-readable names to determine identity.
+
+Its deterministic deduplication layer examines candidate behavior so differently worded suggestions can still be recognized as the same underlying finding.
+
+That means repeated runs against unchanged source converge instead of endlessly creating duplicate tests or duplicate review findings.
+
+For an unresolved finding:
+
+```text
+first run
+  -> NEEDS REVIEW
+  -> review evidence stored
+
+later run against unchanged source
+  -> same underlying behavior recognized
+  -> SKIPPED
+  -> already awaiting human review
+```
+
+RailsProof also fingerprints the target source associated with a review finding.
+
+If the application source changes, an old review finding no longer automatically suppresses new testing.
+
+```text
+unchanged source + same finding
+  -> SKIPPED
+
+changed source
+  -> eligible for analysis and execution again
+```
+
+This allows a natural development loop:
+
+```text
+RailsProof discovers disagreement
+        |
+        v
+NEEDS REVIEW
+        |
+        v
+developer evaluates finding
+        |
+        v
+application code changes
+        |
+        v
+source fingerprint changes
+        |
+        v
+RailsProof analyzes behavior again
+        |
+        v
+candidate passes
+        |
+        v
+KEPT
+```
+
+---
+
+## Setup-Sensitive Deduplication
+
+Two tests can contain the same assertion without testing the same behavior.
+
+For example:
+
+```ruby
+post = Post.new(title: "Learning Rails")
+
+assert_not post.title_matches_exactly?("Rails")
+```
+
+and:
+
+```ruby
+post = Post.new(title: nil)
+
+assert_not post.title_matches_exactly?("Rails")
+```
+
+have the same assertion text but different setup and therefore test different behavior.
+
+RailsProof's AI deduplication accounts for setup context when comparing meaningful candidate behavior.
+
+This prevents an important class of false-positive deduplication where legitimate coverage could otherwise be silently discarded.
+
+RailsProof therefore aims to be conservative about skipping tests:
+
+```text
+same assertion + different setup
+  != same behavior
+```
 
 ---
 
 ## Example
 
-A RailsProof run currently looks something like:
+A normal successful RailsProof run can look like:
 
 ```text
 RailsProof targets: 1
@@ -149,7 +523,7 @@ Model file: app/models/post.rb
 Model class: Post
 Test file: test/models/post_test.rb
 Test status: exists
-Test cases: 2
+Test cases: 7
 
 Source associations: 1
   belongs_to :user
@@ -168,20 +542,40 @@ Coverage:
   Covered: 2
   Missing: 0
 
-AI suggested tests: 4
+AI suggested tests: 3
   title_matches? returns false for blank queries
   title_matches? performs a case insensitive substring match
-  title_matches? returns false when the query is absent from the title
   title_matches? handles a nil title
 
-AI test results: 4
+AI test results: 3
   KEPT: title_matches? returns false for blank queries
   KEPT: title_matches? performs a case insensitive substring match
-  KEPT: title_matches? returns false when the query is absent from the title
   KEPT: title_matches? handles a nil title
 ```
 
-The resulting test file contains ordinary Minitest code. There is no RailsProof-specific runtime required for the generated tests themselves.
+A run that discovers a possible application bug can look like:
+
+```text
+AI suggested tests: 1
+  title_matches_exactly? rejects partial title matches
+    Reason: The method name strongly indicates equality semantics,
+    while the implementation performs substring matching.
+
+AI test results: 1
+  NEEDS REVIEW: title_matches_exactly? rejects partial title matches
+    candidate test failed against application
+    Review saved: .rails_proof/review/...
+```
+
+Running RailsProof again without changing the application can then produce:
+
+```text
+AI test results: 1
+  SKIPPED: title_matches_exactly? requires the whole title to match
+    already awaiting human review
+```
+
+even though the AI described the finding differently.
 
 ---
 
@@ -189,11 +583,9 @@ The resulting test file contains ordinary Minitest code. There is no RailsProof-
 
 RailsProof first handles the parts of a Rails application that can be understood without AI.
 
-Current deterministic support includes:
-
 ### Models
 
-RailsProof can inspect:
+Current deterministic model inspection includes:
 
 - Active Record columns
 - associations
@@ -211,7 +603,7 @@ class Post < ApplicationRecord
 end
 ```
 
-can produce tests such as:
+can produce:
 
 ```ruby
 test "belongs to user" do
@@ -268,9 +660,34 @@ Existing Rails-generated controller tests are recognized so RailsProof does not 
 
 ---
 
+## Existing Tests
+
+RailsProof is designed to work with an existing test suite rather than assume it is starting from scratch.
+
+It currently recognizes:
+
+- Rails-style `test "..." do` declarations
+- method-style `def test_...` declarations
+
+Existing tests are used for both deterministic and AI-assisted analysis.
+
+RailsProof can:
+
+- compare deterministic concerns against existing tests
+- insert only missing deterministic tests
+- provide existing tests to AI as context
+- avoid AI tests already represented in the live suite
+- preserve passing generated tests across later candidate failures
+- avoid repeated AI suggestions within the same run
+- avoid repeatedly executing unresolved review findings
+
+RailsProof is intended to be run repeatedly as an application evolves, not merely once when the project is created.
+
+---
+
 ## AI Analysis
 
-Fixed rules can only take test generation so far.
+Fixed rules can only take automatic test generation so far.
 
 Consider:
 
@@ -292,7 +709,7 @@ def cancel!
 end
 ```
 
-There is no general Rails reflection API that can determine every meaningful behavioral test for code like this.
+There is no general Rails reflection API that can determine every meaningful behavioral test for application-specific code like this.
 
 That is where RailsProof uses AI.
 
@@ -304,15 +721,27 @@ The AI receives structured context including:
 - existing tests
 - deterministic concerns already discovered by RailsProof
 
-It is explicitly instructed not to duplicate behavior already covered by deterministic analysis or existing tests.
+It is instructed to avoid duplicating behavior already covered by deterministic analysis or existing tests.
 
-The AI returns structured test suggestions containing:
+It is also instructed not to assume that current implementation behavior is necessarily the intended public contract.
 
-- a test name
-- the reason the behavior deserves coverage
+The AI returns structured suggestions containing:
+
+- suggestion kind
+- test name
+- reason
 - candidate Minitest code
 
-RailsProof then independently validates and executes that code.
+Supported suggestion kinds currently include:
+
+```text
+coverage
+contract_check
+```
+
+RailsProof independently validates, deduplicates, writes, and executes the returned candidate code.
+
+The AI does not directly control application test files.
 
 ---
 
@@ -320,7 +749,7 @@ RailsProof then independently validates and executes that code.
 
 Generated code is not blindly accepted.
 
-Before an AI-generated test can be kept, RailsProof currently checks that the candidate:
+Before an AI-generated test can execute, RailsProof currently checks that the candidate:
 
 - is nonblank
 - parses as valid Ruby
@@ -329,32 +758,78 @@ Before an AI-generated test can be kept, RailsProof currently checks that the ca
 - does not contain a `require` statement
 - does not contain Markdown code fences
 
-RailsProof then inserts the candidate and runs the actual test.
+Candidates are evaluated one at a time.
 
-If it passes:
+Before each candidate, RailsProof captures the previous state of the test file.
 
-```text
-KEPT: title_matches? handles a nil title
-```
+If the candidate passes, it may remain in the suite.
 
-the candidate remains in the test file.
+If it fails, the previous file state is restored.
 
-If it fails:
+That means:
 
 ```text
-REJECTED: some generated behavior
-  generated test failed
+candidate 1 passes
+  -> kept
+
+candidate 2 fails
+  -> rolled back
+
+candidate 1 remains
 ```
 
-RailsProof restores the file to its previous state.
+A later failure does not discard earlier successful coverage.
 
-Candidates are evaluated one at a time, so a later failed test does not discard earlier candidates that have already passed.
+---
+
+## Why a Passing Generated Test Is Not Enough
+
+A generated test can pass and still be a bad test.
+
+For example, if RailsProof sees:
+
+```ruby
+def title_matches_exactly?(query)
+  title.include?(query)
+end
+```
+
+and generates:
+
+```ruby
+assert post.title_matches_exactly?("Rails")
+```
+
+for a title of:
+
+```text
+Learning Rails
+```
+
+the test passes.
+
+But it may simply be locking an implementation bug into the suite.
+
+That is why RailsProof distinguishes normal coverage from contract checks and why application behavior is not treated as unquestionable specification.
+
+The goal is not:
+
+```text
+generate tests that make the current code pass
+```
+
+The goal is:
+
+```text
+generate meaningful tests for the application's apparent contract
+and surface disagreements that deserve human attention
+```
 
 ---
 
 ## Installation
 
-RailsProof is currently under active development and has not reached a stable public release.
+RailsProof is currently under active development and has not yet reached its first public release.
 
 For development from a local checkout, add RailsProof to the application's `Gemfile`:
 
@@ -368,7 +843,7 @@ Then run:
 bundle install
 ```
 
-A normal packaged installation will eventually be:
+A packaged installation will eventually be:
 
 ```ruby
 gem "rails_proof"
@@ -380,6 +855,8 @@ followed by:
 bundle install
 ```
 
+The planned first public RailsProof release is **10.0**.
+
 ---
 
 ## AI Provider Setup
@@ -388,7 +865,7 @@ RailsProof's core AI interface is provider-agnostic.
 
 The first implemented provider adapter uses OpenAI.
 
-At the moment, applications using the OpenAI adapter must also have the OpenAI Ruby SDK available:
+Applications using the OpenAI adapter currently need the OpenAI Ruby SDK available:
 
 ```ruby
 gem "openai"
@@ -421,6 +898,8 @@ export RAILSPROOF_OPENAI_MODEL="your-model"
 ```
 
 AI usage is performed using your provider credentials and may incur charges from that provider.
+
+RailsProof's own test suite does not require paid AI calls. Development tests use a fake AI client.
 
 ---
 
@@ -465,23 +944,39 @@ app/controllers
 
 Base framework files and concern directories are ignored.
 
+Path traversal, unsupported paths, and missing targets are rejected rather than silently guessed.
+
 ---
 
-## Existing Tests
+## Generated Tests
 
-RailsProof is designed to work with an existing test suite rather than assume it is starting from scratch.
+RailsProof generates ordinary Minitest tests.
 
-It can:
+A generated model test looks like normal Rails code:
 
-- detect existing Minitest test cases
-- recognize Rails-style `test "..." do` declarations
-- recognize method-style `def test_...` declarations
-- compare existing tests against deterministic concerns
-- insert only missing deterministic tests
-- provide existing tests to AI as context
-- preserve passing AI-generated tests across candidate failures
+```ruby
+class PostTest < ActiveSupport::TestCase
+end
+```
 
-RailsProof should be usable repeatedly during development, not just once when a project is created.
+Controller tests use:
+
+```ruby
+class PostsControllerTest < ActionDispatch::IntegrationTest
+end
+```
+
+There is no RailsProof-specific runtime DSL inside generated tests.
+
+After a test is kept, developers can:
+
+- read it
+- edit it
+- move it
+- run it directly
+- maintain it like any other Rails test
+
+The generated suite remains a normal Rails test suite.
 
 ---
 
@@ -491,21 +986,11 @@ RailsProof currently targets the test framework Rails ships with by default:
 
 **Minitest.**
 
-Generated tests are ordinary Rails tests:
+The goal is not to create a RailsProof-specific testing framework.
 
-```ruby
-class PostTest < ActiveSupport::TestCase
-end
-```
+The goal is to produce tests a Rails developer already understands.
 
-and:
-
-```ruby
-class PostsControllerTest < ActionDispatch::IntegrationTest
-end
-```
-
-The goal is to generate tests a Rails developer can read, edit, run, and maintain normally.
+That also keeps generated coverage useful even if RailsProof itself is later removed from the application.
 
 ---
 
@@ -516,14 +1001,16 @@ RailsProof is still young.
 Current limitations include:
 
 - deterministic model analysis covers only a subset of Rails validations and behaviors
-- deterministic controller coverage currently focuses on routed response behavior
-- AI coverage deduplication and convergence still need stronger deterministic safeguards
-- AI-generated tests can still be incorrect even when syntactically valid
+- deterministic controller analysis currently focuses primarily on routed response behavior
+- AI behavior identity is intentionally conservative and will continue to evolve as more real-world cases are discovered
+- generated tests can still contain logically incorrect expectations
 - complex setup may require more application context than RailsProof currently supplies
+- the human review workflow currently persists findings but does not yet provide a complete review-management command
+- review findings do not yet have a full accepted/rejected/resolved lifecycle
 - jobs, mailers, services, channels, system tests, and other Rails components are not yet first-class targets
 - OpenAI is currently the first implemented AI provider adapter
 - configuration is still minimal
-- APIs and generated output may change significantly before the first stable release
+- APIs and generated output may change significantly before the first public release
 
 Use Git and review generated changes.
 
@@ -533,13 +1020,15 @@ Use Git and review generated changes.
 
 Near-term development includes:
 
-- deterministic AI suggestion deduplication
-- AI convergence controls
+- human review commands and workflow
+- review resolution states
+- retrying or accepting saved review candidates
 - richer existing-test analysis
 - additional model validations and associations
 - deeper controller behavior analysis
 - improved context gathering for application-specific code
 - generated-test failure analysis and repair
+- regression detection when previously passing generated tests begin failing
 - jobs
 - mailers
 - service objects
@@ -547,6 +1036,8 @@ Near-term development includes:
 - additional AI providers
 - provider configuration
 - improved command output and reporting
+
+Deterministic AI suggestion deduplication and source-aware convergence are already implemented.
 
 The long-term goal is straightforward:
 
@@ -580,7 +1071,77 @@ RailsProof includes a dummy Rails application under:
 test/dummy
 ```
 
-which is used for integration testing against real Rails models, controllers, routes, and generated tests.
+which is used for integration testing against real Rails models, controllers, routes, generated tests, AI candidate execution, rollback, review persistence, and convergence behavior.
+
+Dummy application tests can be run explicitly, for example:
+
+```bash
+bin/test test/dummy/test/models/post_test.rb
+```
+
+---
+
+## Testing Philosophy
+
+RailsProof itself is tested against both deterministic fixtures and deliberately tricky AI-generation scenarios.
+
+Important behavior is tested at multiple layers:
+
+```text
+unit behavior
+     |
+     v
+filter / executor behavior
+     |
+     v
+generator integration
+     |
+     v
+real dummy Rails application
+```
+
+The dummy application is useful for deliberately introducing plausible bugs and verifying the complete RailsProof lifecycle.
+
+For example:
+
+```text
+introduce implementation bug
+        |
+        v
+run RailsProof
+        |
+        v
+contract check generated
+        |
+        v
+candidate fails
+        |
+        v
+NEEDS REVIEW
+        |
+        v
+run RailsProof again
+        |
+        v
+same finding recognized
+        |
+        v
+SKIPPED
+        |
+        v
+fix application
+        |
+        v
+source fingerprint changes
+        |
+        v
+RailsProof analyzes again
+        |
+        v
+passing coverage KEPT
+```
+
+The intent is to test RailsProof against the messy cases produced by real nondeterministic AI output, not only idealized fixtures.
 
 ---
 
@@ -588,9 +1149,14 @@ which is used for integration testing against real Rails models, controllers, ro
 
 RailsProof is in early development, but bug reports, test cases, design discussion, and pull requests are welcome.
 
-For changes to test generation behavior, please include tests demonstrating both the intended behavior and the cases RailsProof should avoid.
+For changes to test generation or deduplication behavior, please include tests demonstrating both:
 
-Because RailsProof can modify application test files, changes involving generation, AI output, validation, execution, or rollback should be treated carefully and tested thoroughly.
+- behavior that RailsProof should recognize as equivalent
+- behavior that RailsProof must keep distinct
+
+False-positive deduplication is especially important to avoid because silently skipping legitimate coverage is worse than generating an occasional duplicate.
+
+Because RailsProof can modify application test files, changes involving generation, AI output, validation, execution, rollback, review persistence, or deduplication should be treated carefully and tested thoroughly.
 
 ---
 
@@ -602,11 +1168,24 @@ It is intended to eliminate the repetitive part of keeping a Rails application t
 
 Rails already knows a tremendous amount about an application.
 
-AI can reason about the behavior Rails cannot describe through reflection alone.
+AI can reason about behavior that Rails cannot describe through reflection alone.
 
-The test runner can determine whether generated code actually works.
+The test runner can determine whether a generated expectation agrees with the current implementation.
 
-RailsProof brings those three pieces together.
+Deterministic safeguards can prevent nondeterministic AI output from repeatedly creating the same work.
+
+Human review can resolve the cases where implementation and apparent contract disagree.
+
+RailsProof brings those pieces together.
+
+The principle is simple:
+
+```text
+Do not blindly trust the AI.
+Do not blindly trust the implementation.
+Do not throw away useful disagreements.
+Do not generate the same work forever.
+```
 
 **You write the Rails app. We write the tests.**
 
