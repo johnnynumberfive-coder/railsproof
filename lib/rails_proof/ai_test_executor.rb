@@ -1,6 +1,7 @@
 require "pathname"
 require "rails_proof/ai_test_validator"
 require "rails_proof/ai_test_writer"
+require "rails_proof/ai_concern_filter"
 require "rails_proof/test_runner"
 require "rails_proof/review_store"
 
@@ -12,6 +13,7 @@ module RailsProof
       :errors,
       :test_output,
       :review_path,
+      :skip_reason,
       keyword_init: true
     ) do
       def kept?
@@ -24,6 +26,10 @@ module RailsProof
 
       def needs_review?
         status == :needs_review
+      end
+
+      def skipped?
+        status == :skipped
       end
     end
 
@@ -58,9 +64,23 @@ module RailsProof
     end
 
     def execute
-      concerns.map do |concern|
+      filter = RailsProof::AiConcernFilter.new(
+        concerns: concerns,
+        existing_tests: existing_test_source,
+        review_findings: outstanding_review_findings
+      )
+
+      results = filter.concerns.map do |concern|
         execute_concern(concern)
       end
+
+      results.concat(
+        filter.skipped.map do |skipped|
+          skipped_result(skipped)
+        end
+      )
+
+      results
     end
 
     private
@@ -75,7 +95,8 @@ module RailsProof
           status: :rejected,
           errors: validation.errors,
           test_output: nil,
-          review_path: nil
+          review_path: nil,
+          skip_reason: nil
         )
       end
 
@@ -91,7 +112,8 @@ module RailsProof
           status: :kept,
           errors: [],
           test_output: test_result.output,
-          review_path: nil
+          review_path: nil,
+          skip_reason: nil
         )
       else
         restore_file_state(previous_state)
@@ -110,7 +132,8 @@ module RailsProof
           status: :needs_review,
           errors: errors,
           test_output: test_result.output,
-          review_path: review_path
+          review_path: review_path,
+          skip_reason: nil
         )
       end
     rescue StandardError => error
@@ -121,7 +144,35 @@ module RailsProof
         status: :rejected,
         errors: [error.message],
         test_output: nil,
-        review_path: nil
+        review_path: nil,
+        skip_reason: nil
+      )
+    end
+
+    def skipped_result(skipped)
+      Result.new(
+        concern: skipped.concern,
+        status: :skipped,
+        errors: [],
+        test_output: nil,
+        review_path: nil,
+        skip_reason: skipped.reason
+      )
+    end
+
+    def existing_test_source
+      return "" unless absolute_test_file_path.file?
+
+      absolute_test_file_path.read
+    end
+
+    def outstanding_review_findings
+      return [] unless target_path
+      return [] unless review_store.respond_to?(:outstanding_findings)
+
+      review_store.outstanding_findings(
+        target_path: target_path,
+        test_file_path: test_file_path
       )
     end
 

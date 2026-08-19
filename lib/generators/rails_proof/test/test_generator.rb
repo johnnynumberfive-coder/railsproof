@@ -410,6 +410,8 @@ module RailsProof
         say "  KEPT: #{result.concern[:name]}"
       elsif result.needs_review?
         report_needs_review(result)
+      elsif result.skipped?
+        report_skipped(result)
       else
         report_rejected(result)
       end
@@ -429,6 +431,24 @@ module RailsProof
       end
 
       report_failed_test_output(result.test_output)
+    end
+
+    def report_skipped(result)
+      say "  SKIPPED: #{result.concern[:name]}"
+      say "    #{skip_reason_message(result.skip_reason)}"
+    end
+
+    def skip_reason_message(reason)
+      case reason
+      when :existing_test
+        "already exists in test suite"
+      when :needs_review
+        "already awaiting human review"
+      when :duplicate_suggestion
+        "duplicate AI suggestion"
+      else
+        "duplicate or previously handled suggestion"
+      end
     end
 
     def report_rejected(result)

@@ -80,6 +80,7 @@ class RailsProof::AiGeneratorTest < Rails::Generators::TestCase
       "REJECTED: matches titles case-insensitively"
     assert_includes output, "test code is not valid Ruby"
     refute_includes output, "NEEDS REVIEW:"
+    refute_includes output, "SKIPPED:"
   end
 
   test "does not keep rejected AI test code" do
@@ -139,12 +140,7 @@ class RailsProof::AiGeneratorTest < Rails::Generators::TestCase
 
     run_generator ["app/models/post.rb"]
 
-    review_files = Dir[
-      File.join(
-        destination_root,
-        ".rails_proof/review/*.json"
-      )
-    ]
+    review_files = review_files_for_destination
 
     assert_equal 1, review_files.count
 
@@ -174,6 +170,61 @@ class RailsProof::AiGeneratorTest < Rails::Generators::TestCase
     assert_includes record["test_output"], "failure output"
   end
 
+  test "skips a finding already awaiting human review" do
+    use_valid_failing_suggestion
+    create_failing_rails_runner
+
+    first_output = run_generator ["app/models/post.rb"]
+
+    assert_includes first_output,
+      "NEEDS REVIEW: possible application bug"
+
+    assert_equal 1, review_files_for_destination.count
+
+    second_output = run_generator ["app/models/post.rb"]
+
+    assert_includes second_output,
+      "SKIPPED: possible application bug"
+    assert_includes second_output,
+      "already awaiting human review"
+
+    refute_includes second_output,
+      "NEEDS REVIEW: possible application bug"
+
+    assert_equal 1, review_files_for_destination.count
+  end
+
+  test "skips duplicate suggestions from the same AI response" do
+    @ai_client.suggestions = [
+      valid_passing_suggestion,
+      valid_passing_suggestion
+    ]
+
+    create_passing_rails_runner
+
+    output = run_generator ["app/models/post.rb"]
+
+    assert_includes output, "AI suggested tests: 2"
+    assert_includes output,
+      "KEPT: new custom behavior"
+    assert_includes output,
+      "SKIPPED: new custom behavior"
+    assert_includes output,
+      "duplicate AI suggestion"
+
+    path = File.join(
+      destination_root,
+      "test/models/post_test.rb"
+    )
+
+    source = File.read(path)
+
+    assert_equal(
+      1,
+      source.scan('test "new custom behavior" do').count
+    )
+  end
+
   test "sends source and existing tests to AI" do
     run_generator ["app/models/post.rb"]
 
@@ -191,6 +242,7 @@ class RailsProof::AiGeneratorTest < Rails::Generators::TestCase
   def use_valid_failing_suggestion
     @ai_client.suggestions = [
       {
+        kind: "contract_check",
         name: "possible application bug",
         reason: "The candidate disagrees with application behavior.",
         test_code: <<~RUBY
@@ -202,7 +254,48 @@ class RailsProof::AiGeneratorTest < Rails::Generators::TestCase
     ]
   end
 
+  def valid_passing_suggestion
+    {
+      kind: "coverage",
+      name: "new custom behavior",
+      reason: "The behavior deserves coverage.",
+      test_code: <<~RUBY
+        test "new custom behavior" do
+          assert true
+        end
+      RUBY
+    }
+  end
+
+  def review_files_for_destination
+    Dir[
+      File.join(
+        destination_root,
+        ".rails_proof/review/*.json"
+      )
+    ]
+  end
+
   def create_failing_rails_runner
+    create_rails_runner(
+      exit_status: 1,
+      output: <<~TEXT
+        1 runs, 1 assertions, 1 failures, 0 errors
+        failure output
+      TEXT
+    )
+  end
+
+  def create_passing_rails_runner
+    create_rails_runner(
+      exit_status: 0,
+      output: <<~TEXT
+        1 runs, 1 assertions, 0 failures, 0 errors
+      TEXT
+    )
+  end
+
+  def create_rails_runner(exit_status:, output:)
     bin_directory = File.join(
       destination_root,
       "bin"
@@ -226,10 +319,9 @@ class RailsProof::AiGeneratorTest < Rails::Generators::TestCase
       <<~RUBY
         #!/usr/bin/env ruby
 
-        puts "1 runs, 1 assertions, 1 failures, 0 errors"
-        puts "failure output"
+        puts #{output.inspect}
 
-        exit 1
+        exit #{exit_status}
       RUBY
     )
 

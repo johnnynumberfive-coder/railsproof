@@ -15,7 +15,7 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
 
   class FakeRunner
     class << self
-      attr_accessor :results
+      attr_accessor :results, :runs
     end
 
     def initialize(root:, test_file_path:)
@@ -24,15 +24,18 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
     end
 
     def run
+      self.class.runs += 1
       self.class.results.shift
     end
   end
 
   class FakeReviewStore
     attr_reader :reviews
+    attr_accessor :findings
 
     def initialize
       @reviews = []
+      @findings = []
     end
 
     def save(**review)
@@ -42,10 +45,18 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
         "/fake/reviews/review-#{reviews.count}.json"
       )
     end
+
+    def outstanding_findings(
+      target_path:,
+      test_file_path:
+    )
+      findings
+    end
   end
 
   setup do
     FakeRunner.results = []
+    FakeRunner.runs = 0
   end
 
   test "keeps a candidate when its test passes" do
@@ -75,7 +86,10 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
       assert results.first.kept?
       refute results.first.needs_review?
       refute results.first.rejected?
+      refute results.first.skipped?
       assert_nil results.first.review_path
+      assert_nil results.first.skip_reason
+      assert_equal 1, FakeRunner.runs
       assert_empty review_store.reviews
 
       source = test_file(root).read
@@ -117,6 +131,8 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
       assert result.needs_review?
       refute result.rejected?
       refute result.kept?
+      refute result.skipped?
+      assert_equal 1, FakeRunner.runs
 
       assert_equal before, test_file(root).read
 
@@ -202,7 +218,9 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
 
       assert results.first.rejected?
       refute results.first.needs_review?
+      refute results.first.skipped?
       assert_equal before, test_file(root).read
+      assert_equal 0, FakeRunner.runs
       assert_empty review_store.reviews
 
       assert_includes(
@@ -242,6 +260,7 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
 
       assert results[0].kept?
       assert results[1].needs_review?
+      assert_equal 2, FakeRunner.runs
 
       source = test_file(root).read
 
@@ -275,6 +294,7 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
 
       assert results.first.kept?
       assert test_file(root).file?
+      assert_equal 1, FakeRunner.runs
       assert_empty review_store.reviews
 
       source = test_file(root).read
@@ -309,7 +329,9 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
 
       assert results.first.needs_review?
       refute results.first.rejected?
+      refute results.first.skipped?
       refute test_file(root).exist?
+      assert_equal 1, FakeRunner.runs
       assert_equal 1, review_store.reviews.count
     end
   end
@@ -343,10 +365,122 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
 
       assert result.needs_review?
       assert_nil result.review_path
+      assert_equal 1, FakeRunner.runs
 
       assert_includes(
         result.errors,
         "RailsProof could not persist review: disk is full"
+      )
+    end
+  end
+
+  test "skips a concern already covered by the live test suite" do
+    with_test_app do |root|
+      create_existing_test_file(root)
+
+      before = test_file(root).read
+      review_store = FakeReviewStore.new
+
+      executor = build_executor(
+        root: root,
+        review_store: review_store,
+        concerns: [
+          valid_concern(
+            name: "existing behavior",
+            assertion: "assert false"
+          )
+        ]
+      )
+
+      result = executor.execute.first
+
+      assert result.skipped?
+      refute result.kept?
+      refute result.rejected?
+      refute result.needs_review?
+      assert_equal :existing_test, result.skip_reason
+      assert_equal 0, FakeRunner.runs
+      assert_equal before, test_file(root).read
+      assert_empty review_store.reviews
+    end
+  end
+
+  test "skips a concern already awaiting human review" do
+    with_test_app do |root|
+      create_existing_test_file(root)
+
+      before = test_file(root).read
+      review_store = FakeReviewStore.new
+
+      concern = valid_concern(
+        name: "possible application bug",
+        assertion: "assert false"
+      )
+
+      review_store.findings = [
+        {
+          "name" => "possible application bug",
+          "test_code" => concern[:test_code]
+        }
+      ]
+
+      executor = build_executor(
+        root: root,
+        review_store: review_store,
+        concerns: [concern]
+      )
+
+      result = executor.execute.first
+
+      assert result.skipped?
+      assert_equal :needs_review, result.skip_reason
+      assert_equal 0, FakeRunner.runs
+      assert_equal before, test_file(root).read
+      assert_empty review_store.reviews
+    end
+  end
+
+  test "executes only one copy of a duplicate AI suggestion" do
+    with_test_app do |root|
+      create_existing_test_file(root)
+
+      FakeRunner.results = [
+        passing_result
+      ]
+
+      review_store = FakeReviewStore.new
+
+      executor = build_executor(
+        root: root,
+        review_store: review_store,
+        concerns: [
+          valid_concern(
+            name: "new behavior",
+            assertion: "assert true"
+          ),
+          valid_concern(
+            name: "new behavior",
+            assertion: "assert true"
+          )
+        ]
+      )
+
+      results = executor.execute
+
+      assert_equal 2, results.count
+      assert_equal 1, results.count(&:kept?)
+      assert_equal 1, results.count(&:skipped?)
+      assert_equal(
+        :duplicate_suggestion,
+        results.find(&:skipped?).skip_reason
+      )
+      assert_equal 1, FakeRunner.runs
+
+      source = test_file(root).read
+
+      assert_equal(
+        1,
+        source.scan('test "new behavior" do').count
       )
     end
   end
@@ -400,6 +534,7 @@ class RailsProof::AiTestExecutorTest < ActiveSupport::TestCase
   def valid_concern(name:, assertion:)
     {
       type: :ai,
+      kind: :coverage,
       name: name,
       reason: "The source contains behavior worth testing.",
       test_code: <<~RUBY

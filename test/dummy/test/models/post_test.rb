@@ -52,13 +52,6 @@ class PostTest < ActiveSupport::TestCase
     assert post.title_matches?(123)
   end
 
-  test "title_matches_exactly? performs a case insensitive full-title match" do
-    post = Post.new(title: "Learning Rails")
-
-    assert post.title_matches_exactly?("LEARNING RAILS")
-    assert_not post.title_matches_exactly?("Rails")
-  end
-
   test "title_matches_exactly? returns false for blank queries" do
     post = Post.new(title: "Learning Rails")
 
@@ -67,7 +60,20 @@ class PostTest < ActiveSupport::TestCase
     end
   end
 
-  test "title_matches_exactly? safely handles a nil title" do
+  test "title_matches_exactly? requires case insensitive whole title equality" do
+    post = Post.new(title: "Learning Rails")
+
+    assert post.title_matches_exactly?("LEARNING RAILS")
+    assert_not post.title_matches_exactly?("Rails")
+  end
+
+  test "title_matches_exactly? converts non string queries to strings" do
+    post = Post.new(title: "123")
+
+    assert post.title_matches_exactly?(123)
+  end
+
+  test "title_matches_exactly? handles a nil title" do
     post = Post.new(title: nil)
 
     assert_not post.title_matches_exactly?("Rails")
