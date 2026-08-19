@@ -30,9 +30,13 @@ module RailsProof
         chdir: working_directory.to_s
       )
 
+      output = [stdout, stderr].reject(&:empty?).join
+
+      raise_unavailable_test_api!(output)
+
       Result.new(
         passed: status.success?,
-        output: [stdout, stderr].reject(&:empty?).join,
+        output: output,
         command: command
       )
     end
@@ -46,6 +50,31 @@ module RailsProof
     end
 
     private
+
+    def raise_unavailable_test_api!(output)
+      message =
+        unavailable_test_api_message(output)
+
+      return unless message
+
+      raise Error, message
+    end
+
+    def unavailable_test_api_message(output)
+      if output.match?(
+        /NoMethodError: undefined method ['`]stub['`]/
+      )
+        return "candidate uses .stub, but .stub is unavailable in this test environment"
+      end
+
+      if output.match?(
+        /NameError: uninitialized constant Minitest::Mock/
+      )
+        return "candidate uses Minitest::Mock, but Minitest::Mock is unavailable in this test environment"
+      end
+
+      nil
+    end
 
     def resolve_runner
       @resolve_runner ||= begin

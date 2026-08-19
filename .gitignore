@@ -3,6 +3,7 @@
 /log/*.log
 /pkg/
 /tmp/
+/test/dummy/.rails_proof/
 /test/dummy/db/*.sqlite3
 /test/dummy/db/*.sqlite3-*
 /test/dummy/log/*.log

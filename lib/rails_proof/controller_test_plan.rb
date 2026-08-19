@@ -7,7 +7,9 @@ module RailsProof
     end
 
     def concerns
-      @concerns ||= inspector.routes.map do |route|
+      @concerns ||= inspector.routes.filter_map do |route|
+        next if route[:name].to_s.empty?
+
         {
           type: :controller_response,
           verb: route[:verb],

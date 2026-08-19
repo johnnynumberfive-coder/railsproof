@@ -15,6 +15,10 @@ RailsProof is being developed for modern Rails applications, with current develo
 >
 > RailsProof is under active development ahead of its first public release. Its behavior and public API may change. Use version control when trying it on real applications.
 
+Need help, found something weird, or just want to talk about RailsProof?
+
+**Visit us at https://support.oakharborventures.com**
+
 ---
 
 ## What RailsProof Does
@@ -843,7 +847,7 @@ Then run:
 bundle install
 ```
 
-A packaged installation will eventually be:
+After the public release, installation will be:
 
 ```ruby
 gem "rails_proof"
@@ -855,7 +859,7 @@ followed by:
 bundle install
 ```
 
-The planned first public RailsProof release is **10.0**.
+The planned first public release is **RailsProof 1.0.0**.
 
 ---
 
@@ -871,7 +875,7 @@ Applications using the OpenAI adapter currently need the OpenAI Ruby SDK availab
 gem "openai"
 ```
 
-Then:
+Then run:
 
 ```bash
 bundle install
@@ -944,8 +948,6 @@ app/controllers
 
 Base framework files and concern directories are ignored.
 
-Path traversal, unsupported paths, and missing targets are rejected rather than silently guessed.
-
 ---
 
 ## Generated Tests
@@ -1010,7 +1012,7 @@ Current limitations include:
 - jobs, mailers, services, channels, system tests, and other Rails components are not yet first-class targets
 - OpenAI is currently the first implemented AI provider adapter
 - configuration is still minimal
-- APIs and generated output may change significantly before the first public release
+- APIs and generated output may change as RailsProof evolves
 
 Use Git and review generated changes.
 
@@ -1145,9 +1147,21 @@ The intent is to test RailsProof against the messy cases produced by real nondet
 
 ---
 
+## Support
+
+Questions about RailsProof? Something not working? Found behavior you aren't sure is a bug?
+
+**Visit https://support.oakharborventures.com**
+
+Ask a question, report a problem, tell us what RailsProof got wrong, or just come talk to us about what you're building.
+
+We'd much rather hear from you than have you spend an afternoon fighting with RailsProof by yourself.
+
+---
+
 ## Contributing
 
-RailsProof is in early development, but bug reports, test cases, design discussion, and pull requests are welcome.
+RailsProof is in active development, and bug reports, test cases, design discussion, and pull requests are welcome.
 
 For changes to test generation or deduplication behavior, please include tests demonstrating both:
 

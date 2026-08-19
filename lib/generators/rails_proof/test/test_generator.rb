@@ -95,7 +95,8 @@ module RailsProof
 
     def prepare_model_target(target)
       @current_target = target
-      @model_class = target.class_name.safe_constantize
+      @model_class, @model_runtime_error =
+        constantize_target(target.class_name)
       @absolute_model_path = Pathname.new(destination_root).join(target.path)
       @model_source = @absolute_model_path.read
 
@@ -151,7 +152,8 @@ module RailsProof
 
     def prepare_controller_target(target)
       @current_target = target
-      @controller_class = target.class_name.safe_constantize
+      @controller_class, @controller_runtime_error =
+        constantize_target(target.class_name)
       @absolute_controller_path =
         Pathname.new(destination_root).join(target.path)
       @controller_source = @absolute_controller_path.read
@@ -237,6 +239,7 @@ module RailsProof
     def report_runtime_analysis
       unless @model_class
         say "Runtime inspection: unavailable"
+        report_runtime_error(@model_runtime_error)
         return
       end
 
@@ -309,6 +312,7 @@ module RailsProof
     def report_controller_analysis
       unless @controller_class
         say "Controller inspection: unavailable"
+        report_runtime_error(@controller_runtime_error)
         return
       end
 
@@ -336,6 +340,20 @@ module RailsProof
       @controller_coverage_plan.missing_concerns.each do |concern|
         say "    #{concern[:description]}"
       end
+    end
+
+    def constantize_target(class_name)
+      [class_name.safe_constantize, nil]
+    rescue StandardError => error
+      [nil, error]
+    end
+
+    def report_runtime_error(error)
+      return unless error
+
+      message = error.message.to_s.lines.first.to_s.strip
+
+      say "  Load error: #{error.class}: #{message}"
     end
 
     def report_ai_analysis(
