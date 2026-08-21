@@ -11,6 +11,7 @@ require "rails_proof/controller_test_coverage_plan"
 require "rails_proof/controller_test_writer"
 require "rails_proof/ai_test_planner"
 require "rails_proof/ai_test_executor"
+require "rails_proof/test_file_inserter"
 
 module RailsProof
   class TestGenerator < Rails::Generators::Base
@@ -170,10 +171,12 @@ module RailsProof
         @controller_inspector = RailsProof::ControllerInspector.new(
           @controller_class
         )
+
         @controller_test_plan = RailsProof::ControllerTestPlan.new(
           @controller_inspector
         )
-        @controller_coverage_plan =
+
+        @controller_test_coverage_plan =
           RailsProof::ControllerTestCoveragePlan.new(
             @controller_test_plan,
             @test_inspector
@@ -181,7 +184,7 @@ module RailsProof
       else
         @controller_inspector = nil
         @controller_test_plan = nil
-        @controller_coverage_plan = nil
+        @controller_test_coverage_plan = nil
       end
     end
 
@@ -334,10 +337,10 @@ module RailsProof
       end
 
       say "Coverage:"
-      say "  Covered: #{@controller_coverage_plan.covered_count}"
-      say "  Missing: #{@controller_coverage_plan.missing_count}"
+      say "  Covered: #{@controller_test_coverage_plan.covered_count}"
+      say "  Missing: #{@controller_test_coverage_plan.missing_count}"
 
-      @controller_coverage_plan.missing_concerns.each do |concern|
+      @controller_test_coverage_plan.missing_concerns.each do |concern|
         say "    #{concern[:description]}"
       end
     end
@@ -509,10 +512,10 @@ module RailsProof
       )
 
       if @absolute_test_file_path.file?
-        inject_into_file(
-          @test_file_path,
-          "\n#{writer.render}\n",
-          before: /^end\s*\z/
+        insert_rendered_tests(
+          writer.render,
+          test_class_name: "#{@current_target.class_name}Test",
+          superclass: "ActiveSupport::TestCase"
         )
       else
         create_file @test_file_path, writer.render_test_file
@@ -521,22 +524,38 @@ module RailsProof
 
     def write_missing_controller_tests
       return unless @controller_class
-      return if @controller_coverage_plan.missing_count.zero?
+      return if @controller_test_coverage_plan.missing_count.zero?
 
       writer = RailsProof::ControllerTestWriter.new(
         controller_class_name: @current_target.class_name,
-        concerns: @controller_coverage_plan.missing_concerns
+        concerns: @controller_test_coverage_plan.missing_concerns
       )
 
       if @absolute_test_file_path.file?
-        inject_into_file(
-          @test_file_path,
-          "\n#{writer.render}\n",
-          before: /^end\s*\z/
+        insert_rendered_tests(
+          writer.render,
+          test_class_name: "#{@current_target.class_name}Test",
+          superclass: "ActionDispatch::IntegrationTest"
         )
       else
         create_file @test_file_path, writer.render_test_file
       end
+    end
+
+    def insert_rendered_tests(
+      rendered_test,
+      test_class_name:,
+      superclass:
+    )
+      source = @absolute_test_file_path.read
+
+      updated = RailsProof::TestFileInserter.new(
+        source: source,
+        test_class_name: test_class_name,
+        superclass: superclass
+      ).insert(rendered_test)
+
+      @absolute_test_file_path.write(updated)
     end
   end
 end

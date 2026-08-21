@@ -4,6 +4,7 @@ require "rails_proof/ai_test_writer"
 require "rails_proof/ai_concern_filter"
 require "rails_proof/test_runner"
 require "rails_proof/review_store"
+require "rails_proof/test_file_inserter"
 
 module RailsProof
   class AiTestExecutor
@@ -34,13 +35,13 @@ module RailsProof
     end
 
     attr_reader :root,
-      :target_path,
-      :test_file_path,
-      :test_class_name,
-      :superclass,
-      :concerns,
-      :runner_class,
-      :review_store
+                :target_path,
+                :test_file_path,
+                :test_class_name,
+                :superclass,
+                :concerns,
+                :runner_class,
+                :review_store
 
     def initialize(
       root:,
@@ -124,7 +125,10 @@ module RailsProof
             test_output: test_result.output
           )
 
-        errors = ["candidate test failed against application"]
+        errors = [
+          "candidate test failed against application"
+        ]
+
         errors << persistence_error if persistence_error
 
         Result.new(
@@ -199,7 +203,9 @@ module RailsProof
       return unless state
 
       if state[:existed]
-        absolute_test_file_path.write(state[:content])
+        absolute_test_file_path.write(
+          state[:content]
+        )
       elsif absolute_test_file_path.exist?
         absolute_test_file_path.delete
       end
@@ -213,25 +219,27 @@ module RailsProof
       )
 
       if absolute_test_file_path.file?
-        insert_into_existing_file(writer.render)
+        insert_into_existing_file(
+          writer.render
+        )
       else
         absolute_test_file_path.dirname.mkpath
-        absolute_test_file_path.write(writer.render_test_file)
+
+        absolute_test_file_path.write(
+          writer.render_test_file
+        )
       end
     end
 
     def insert_into_existing_file(rendered_test)
       source = absolute_test_file_path.read
 
-      unless source.match?(/^end\s*\z/)
-        raise ArgumentError,
-          "RailsProof could not find the end of #{test_file_path}"
-      end
-
-      updated = source.sub(
-        /^end\s*\z/,
-        "\n#{rendered_test}\nend"
-      )
+      updated =
+        RailsProof::TestFileInserter.new(
+          source: source,
+          test_class_name: test_class_name,
+          superclass: superclass
+        ).insert(rendered_test)
 
       absolute_test_file_path.write(updated)
     end
@@ -245,7 +253,10 @@ module RailsProof
         test_class_name: test_class_name
       )
 
-      [path, nil]
+      [
+        path,
+        nil
+      ]
     rescue StandardError => error
       [
         nil,
