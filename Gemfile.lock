@@ -133,10 +133,11 @@ GEM
     nio4r (2.7.5)
     nokogiri (1.19.4-x86_64-linux-gnu)
       racc (~> 1.4)
-    openai (0.75.0)
+    openai (0.80.0)
       base64
       cgi
-      connection_pool
+      connection_pool (>= 2.2.3)
+      logger
     parallel (2.1.0)
     parser (3.3.12.0)
       ast (~> 2.4.1)
@@ -251,7 +252,7 @@ PLATFORMS
   x86_64-linux-gnu
 
 DEPENDENCIES
-  openai (~> 0.75.0)
+  openai (~> 0.80.0)
   puma
   rails_proof!
   rubocop-rails-omakase
@@ -302,7 +303,7 @@ CHECKSUMS
   net-smtp (0.5.1) sha256=ed96a0af63c524fceb4b29b0d352195c30d82dd916a42f03c62a3a70e5b70736
   nio4r (2.7.5) sha256=6c90168e48fb5f8e768419c93abb94ba2b892a1d0602cb06eef16d8b7df1dca1
   nokogiri (1.19.4-x86_64-linux-gnu) sha256=379fae440b28915e3f19d752ce2dcf8465ed2b2fbefd2a7ca0dd497bc981a06a
-  openai (0.75.0) sha256=4fe9ca1c3cbc18adcebf31d58ec940f9fba94a984484e64d389af099e6861279
+  openai (0.80.0) sha256=aa82a69f43a2d140039be89a37f12742cc90e9f5bfcf2d48f14805d0905d5ded
   parallel (2.1.0) sha256=b35258865c2e31134c5ecb708beaaf6772adf9d5efae28e93e99260877b09356
   parser (3.3.12.0) sha256=21a6d7f755d5a24dfbdc6e6b772e4e879a52e7631a88bc5a3a134606052c9828
   pp (0.6.4) sha256=dfcb0fce700c41456265922884f9fe195d7fbb0674a3578e6c0f69588e82b570
