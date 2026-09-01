@@ -85,7 +85,6 @@ GEM
     base64 (0.3.0)
     bigdecimal (4.1.2)
     builder (3.3.0)
-    cgi (0.5.2)
     concurrent-ruby (1.3.8)
     connection_pool (3.0.2)
     crass (1.0.7)
@@ -133,10 +132,9 @@ GEM
     nio4r (2.7.5)
     nokogiri (1.19.4-x86_64-linux-gnu)
       racc (~> 1.4)
-    openai (0.75.0)
-      base64
-      cgi
-      connection_pool
+    openai (0.83.0)
+      connection_pool (>= 2.2.3)
+      logger
     parallel (2.1.0)
     parser (3.3.12.0)
       ast (~> 2.4.1)
@@ -251,7 +249,7 @@ PLATFORMS
   x86_64-linux-gnu
 
 DEPENDENCIES
-  openai (~> 0.75.0)
+  openai (~> 0.83.0)
   puma
   rails_proof!
   rubocop-rails-omakase
@@ -275,7 +273,6 @@ CHECKSUMS
   bigdecimal (4.1.2) sha256=53d217666027eab4280346fba98e7d5b66baaae1b9c3c1c0ffe89d48188a3fbd
   builder (3.3.0) sha256=497918d2f9dca528fdca4b88d84e4ef4387256d984b8154e9d5d3fe5a9c8835f
   bundler (4.0.18) sha256=02d9a17429de1847b4e0c9f27a9ee4b20c0a74c0a641b4e77195d6019e3618ac
-  cgi (0.5.2) sha256=61ca30298171190fd4fa0d8018e57ada456eae9b7a2b78526debf7f0a0e6f8bb
   concurrent-ruby (1.3.8) sha256=b2f1be836e968ccc78ccfce277ea79c72a88633f22306782c16ff23fb415d1e1
   connection_pool (3.0.2) sha256=33fff5ba71a12d2aa26cb72b1db8bba2a1a01823559fb01d29eb74c286e62e0a
   crass (1.0.7) sha256=94868719948664c89ddcaf0a37c65048413dfcb1c869470a5f7a7ceb5390b295
@@ -302,7 +299,7 @@ CHECKSUMS
   net-smtp (0.5.1) sha256=ed96a0af63c524fceb4b29b0d352195c30d82dd916a42f03c62a3a70e5b70736
   nio4r (2.7.5) sha256=6c90168e48fb5f8e768419c93abb94ba2b892a1d0602cb06eef16d8b7df1dca1
   nokogiri (1.19.4-x86_64-linux-gnu) sha256=379fae440b28915e3f19d752ce2dcf8465ed2b2fbefd2a7ca0dd497bc981a06a
-  openai (0.75.0) sha256=4fe9ca1c3cbc18adcebf31d58ec940f9fba94a984484e64d389af099e6861279
+  openai (0.83.0) sha256=2d94f33183a2e2486a108cff97e10966054e824600d4cee8c2a49aca53c5c4b6
   parallel (2.1.0) sha256=b35258865c2e31134c5ecb708beaaf6772adf9d5efae28e93e99260877b09356
   parser (3.3.12.0) sha256=21a6d7f755d5a24dfbdc6e6b772e4e879a52e7631a88bc5a3a134606052c9828
   pp (0.6.4) sha256=dfcb0fce700c41456265922884f9fe195d7fbb0674a3578e6c0f69588e82b570
